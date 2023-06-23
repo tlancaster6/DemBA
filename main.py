@@ -1,5 +1,5 @@
 import os
-from demba.estimate_pose import analyze_video
+from demba.extract_features_v3 import FeatureExtractor
 
 
 
@@ -9,6 +9,5 @@ project_path = os.path.join(prefix, project)
 config = os.path.join(project_path, 'config.yaml')
 shuffle = 1
 
-video = os.path.join(project_path, 'full_videos\\BHVE_group3_2022-12-21T07_cropped.mp4')
-# video = os.path.join(project_path, 'testclip\\testclip.mp4')
-analyze_video(config, video)
+video = os.path.join(project_path, 'testclip\\testclip.mp4')
+featurizer = FeatureExtractor(config, video)
