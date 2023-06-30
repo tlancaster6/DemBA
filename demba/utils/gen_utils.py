@@ -1,5 +1,6 @@
 from math import radians, degrees
 import numpy as np
+import cv2
 
 bodypart2abbreviation_mapping = {'nose': 'no',
                                  'leftEye': 'le',
@@ -28,3 +29,9 @@ def avg_heading(headings):
     cos_sum = np.nansum([np.cos(h) for h in headings])
     return degrees(np.atan2(sin_sum, cos_sum))
 
+
+def get_frame_size(video_path):
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    h, w = frame.shape[:-1]
+    return h, w
