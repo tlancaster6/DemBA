@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 import pandas as pd
 import cv2
@@ -23,6 +24,15 @@ def threshed_pelt_event_detection(data: pd.Series, upper_thresh: float, min_size
             event_ids.iloc[start:stop] = current_event
             current_event += 1
     return event_ids
+
+
+class Track:
+
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
+        self.start, self.stop = self.data.index.min(), self.data.index.max()
+        self.individual = data.columns.get_level_values(0)[0]
+        self.data = self.data.droplevel('individuals', axis=1)
 
 
 class BasicAnalyzer:
@@ -82,6 +92,62 @@ class BasicAnalyzer:
         event_ids = threshed_pelt_event_detection(self.calc_min_dist_nose_to_stripe4(), dist_thresh, min_frames)
         return event_ids
 
+    def summarize_mouthing_events(self, event_ids=None):
+        output_path = str(Path(self.output_dir) / 'mouthing_events.csv')
+        if not event_ids:
+            event_ids = self.detect_mouthing_events()
+        event_ids = pd.DataFrame({'frame': event_ids.index, 'event_id': event_ids.values})
+        actual_events = event_ids[event_ids.event_id >= 0]
+        starts = actual_events.groupby(actual_events.event_id).frame.min() / 30
+        stops = actual_events.groupby(actual_events.event_id).frame.max() / 30
+        event_lens = (stops - starts).values
+        summary_dict = {
+            'n_mouthing_events': len(actual_events.event_id.unique()),
+            'mean_event_len_secs': np.mean(event_lens),
+            'max_event_len_secs': np.max(event_lens),
+            'min_event_len_secs': np.min(event_lens),
+            'med_event_len_secs': np.median(event_lens),
+            'std_event_len_secs': np.std(event_lens)
+        }
+        pd.Series(summary_dict).to_csv(output_path, header=False)
 
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
+    def parse_tracks(self):
+        tracks = []
+        for individual in self.individuals:
+            sub_df = self.pose_df.loc[:, idx[individual, :, :]]
+            deltas = sub_df.notnull().any(axis=1).astype(int).diff()
+            starts = list(deltas[deltas == 1].index)
+            stops = list(deltas[deltas == -1].index)
+            if sub_df.iloc[0].notnull().any():
+                starts = [sub_df.iloc[0].name] + starts
+            if sub_df.iloc[-1].notnull().any():
+                stops = stops + [sub_df.iloc[-1].name + 1]
+            for start, stop in list(zip(starts, stops)):
+                tracks.append(Track(sub_df.iloc[start:stop]))
+        tracks = sorted(tracks, key=lambda x: x.start)
+        return tracks
+
+    def summarize_tracks(self):
+        tracks = self.parse_tracks()
+        track_lengths = [len(t.data) / 30 for t in tracks]
+        summary_dict = {
+            'n_tracks': len(tracks),
+            'mean_len_secs': np.mean(track_lengths),
+            'max_len_secs': np.max(track_lengths),
+            'min_len_secs': np.min(track_lengths),
+            'med_len_secs': np.median(track_lengths),
+            'std_len_secs': np.std(track_lengths)
+        }
+        output_path = str(Path(self.output_dir) / 'track_summaries.csv')
+        pd.Series(summary_dict).to_csv(output_path, header=False)
+        return summary_dict
+
+
+start = time.time()
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
+vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis\BHVE_group1\BHVE_group1.mp4"
 ba = BasicAnalyzer(vid)
+# ba.summarize_tracks()
+ba.summarize_mouthing_events()
+print(time.time() - start)
+

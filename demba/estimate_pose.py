@@ -9,9 +9,27 @@ idx = pd.IndexSlice
 def analyze_video(config_path, video_path, n_fish=3):
     dlc.analyze_videos(config_path, [video_path], auto_track=False)
     dlc.convert_detections2tracklets(config_path, [video_path], track_method='ellipse')
-    dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish)
+    while n_fish > 0:
+        try:
+            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish)
+            break
+        except ValueError:
+            print(f'failed to stitch tracklets with n_fish={n_fish}')
+            n_fish -= 1
+    if n_fish == 0:
+        print('stitching failed')
+        return
     fill_gaps(config_path, video_path)
     dlc.filterpredictions(config_path, video_path)
+    fix_individual_names(video_path)
+
+def fix_individual_names(video_path):
+    h5_path = str(next(Path(video_path).parent.glob('*_filtered.h5')))
+    csv_path = h5_path.replace('.h5', '.csv')
+    df = pd.read_hdf(h5_path)
+    df.rename(columns={'ind1': 'individual1', 'ind2': 'individual2', 'ind3': 'individual3'}, inplace=True)
+    df.to_csv(csv_path)
+    df.to_hdf(h5_path, "df_with_missing", format="table", mode="w")
 
 
 def fill_gaps(config_path, video_path):
