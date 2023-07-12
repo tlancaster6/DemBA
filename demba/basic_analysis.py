@@ -137,7 +137,7 @@ start = time.time()
 vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group1\BHVE_group1.mp4"
 ba = BasicAnalyzer(vid)
-ba.summarize_tracks()
-ba.summarize_mouthing_events()
+# ba.summarize_tracks()
+# ba.summarize_mouthing_events()
 print(time.time() - start)
 
