@@ -6,24 +6,11 @@ import os
 from demba.utils.roi_utils import estimate_roi
 from itertools import permutations
 import numpy as np
-import ruptures as rpt
+import matplotlib as mpl
+from dbscan1d.core import DBSCAN1D
+
+mpl.use('TkAgg')
 idx = pd.IndexSlice
-
-
-def threshed_pelt_event_detection(data: pd.Series, upper_thresh: float, min_size: int, penalty=3):
-    binary_data = (data < upper_thresh).astype(int).values
-    bkpts = rpt.Pelt(model='l2', min_size=min_size, jump=1).fit_predict(binary_data, penalty)
-    if bkpts[0] != 0:
-        bkpts = [0] + bkpts
-    if bkpts[-1] != len(data):
-        bkpts = bkpts + [len(data)]
-    event_ids = pd.Series(-1, index=data.index)
-    current_event = 0
-    for start, stop in list(zip(bkpts[:-1], bkpts[1:])):
-        if np.mean(binary_data[start:stop]) > 0.5:
-            event_ids.iloc[start:stop] = current_event
-            current_event += 1
-    return event_ids
 
 
 class Track:
@@ -88,8 +75,11 @@ class BasicAnalyzer:
             candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
         return pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
 
-    def detect_mouthing_events(self, dist_thresh=25, min_frames=30):
-        event_ids = threshed_pelt_event_detection(self.calc_min_dist_nose_to_stripe4(), dist_thresh, min_frames)
+    def detect_mouthing_events(self, dist_thresh=25, eps=15, min_samples=15):
+        dists = self.calc_min_dist_nose_to_stripe4()
+        subthresh_frames = dists.loc[dists < dist_thresh].index.values
+        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
+        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
         return event_ids
 
     def summarize_mouthing_events(self, event_ids=None):
@@ -144,10 +134,10 @@ class BasicAnalyzer:
 
 
 start = time.time()
-# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis\BHVE_group1\BHVE_group1.mp4"
+vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group1\BHVE_group1.mp4"
 ba = BasicAnalyzer(vid)
-# ba.summarize_tracks()
+ba.summarize_tracks()
 ba.summarize_mouthing_events()
 print(time.time() - start)
 
