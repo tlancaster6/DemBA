@@ -42,6 +42,12 @@ class Featurizer:
 
         -normalize features to theoretical max? observed max?
         """
+        individual_feature_matrices = []
+        for individual in self.individuals:
+            individual_feature_matrices.append(self.extract_individual_features(individual))
+
+
+    def generate_feature_matrix_old(self):
         feature_matrix = []
         index = []
         for frame_number in range(len(self.pose_df)):
@@ -60,18 +66,23 @@ class Featurizer:
         self.extract_temporal_features(df)
         return df
 
-    def extract_individual_features(self, frame_numer, individual):
-        """extract features that describe the location and pose of the focal individual in a given frame.
+    def extract_individual_features(self, individual):
+        """extract features that describe the location and pose of the focal individual in each frame, and the dynamics
+        of these values across frames.
 
         -body curvature?
         -heading?
         -velocity components perpendicular and parallel to heading?
         -rolling windows?
         """
-        centroid_x, centroid_y = self.estimate_centroid(frame_numer, individual)
-        dist_from_roi_center = self.calc_dist([centroid_x, centroid_y], [self.roi_x, self.roi_y])
-        is_inside_roi = 1 if dist_from_roi_center < self.roi_r else 0
-        return [centroid_x, centroid_y, dist_from_roi_center, is_inside_roi]
+
+        centroid_x = self.calc_centroid(individual, 'x')
+        centroid_y = self.calc_centroid(individual, 'y')
+        dist_from_roi_center = self.calc_dist_from_roi_center(centroid_x, centroid_y)
+        is_inside_roi = self.calc_is_inside_roi(dist_from_roi_center)
+        speed, tangential_acceleration, centripetal_acceleration = self.calc_centroid_speed(centroid_x, centroid_y)
+
+        return [centroid_x, centroid_y, dist_from_roi_center, is_inside_roi, speed, tangential_acceleration, centripetal_acceleration]
     def extract_individualized_social_features(self, frame_number, individual):
         """extract features that describe the spatial relationship of the focal individual to other individuals in the
         frame, and which can vary between individuals in the frame
@@ -98,23 +109,51 @@ class Featurizer:
         @return:
         """
 
-    def estimate_centroid(self, frame_number, individual):
+    def calc_centroid(self, individual, coord):
         """
+        estimate one coordinate of the centroid (i.e., either centroid_x or centroid_y) for a given individual based
+        on the average position of all visible body-parts for that individual in each frame. Frames with no available
+        data will not appear in the returned Series object.
+        @param individual: Must match a key from the "individuals" level of self.pose_df
+        @param coord: either 'x' or 'y'
+        @return: a series containing an estimate for the desired centroid coordinate (x or y) in each frame
+        """
+        centroid_component = self.pose_df.loc[:, idx[individual, :, coord]].mean(axis=1).dropna()
+        centroid_component.name = f'centroid_{coord}'
+        return centroid_component
 
-        @param frame_number:
-        @param individual:
-        @return:
-        """
-        return self.pose_df.loc[frame_number, individual].groupby('coords').mean().tolist()
+    def calc_dist_from_roi_center(self, centroid_x, centroid_y):
+        dist_from_roi_center = np.hypot(centroid_x-self.roi_x, centroid_y-self.roi_y)
+        dist_from_roi_center.name = 'dist_from_roi_center'
+        return dist_from_roi_center
 
-    def calc_dist(self, xy1, xy2):
-        """
-        Euclidean distance between two points. xy1 and xy2 can be any type that support indexing
-        @param xy1: first point
-        @param xy2: second point
-        @return: distance
-        """
-        return np.hypot(xy1[0] - xy2[0], xy1[1] - xy2[1])
+    def calc_is_inside_roi(self, dist_from_roi_center):
+        is_inside_roi = (dist_from_roi_center < self.roi_r).astype(int)
+        is_inside_roi.name = 'is_inside_roi'
+        return is_inside_roi
+
+    def calc_instantaneous_centroid_kinetics(self, centroid_x, centroid_y):
+        # should probably improve this module with a kalman filter or similar
+        dz = (centroid_x + 1j * centroid_y).diff()
+        ddz = dz.diff()
+
+        speed = np.abs(dz)
+        speed.name = 'centroid_speed'
+
+        # should the order of dz and ddz be flipped here?
+        theta = np.angle(ddz) - np.angle(dz)
+        acc = np.abs(ddz)
+        tangential_acceleration = acc * np.cos(theta)
+        tangential_acceleration.name = 'centroid_tangential_acceleration'
+        centripetal_acceleration = acc * np.sin(theta)
+        centripetal_acceleration.name = 'centroid_centripetal_acceleration'
+
+        return [speed, tangential_acceleration, centripetal_acceleration]
+
+
+    def get_id_number(self):
+        pass
+
 
 
 
