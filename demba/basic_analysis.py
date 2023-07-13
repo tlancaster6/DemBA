@@ -44,12 +44,13 @@ class BasicAnalyzer:
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) // 2)
         ret, frame = cap.read()
         if not ret:
             print(f'could not extract a reference frame from {Path(self.video_path).name}')
             return
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        roi_vis_path = str(Path(self.video_path).parent / (Path(self.video_path).stem + '_roi.png'))
+        roi_vis_path = str(Path(self.output_dir) / (Path(self.video_path).stem + '_roi.png'))
         self.roi_x, self.roi_y, self.roi_r = estimate_roi(frame, output_path=roi_vis_path)
         self.frame_height, self.frame_width = frame.shape[:-1]
         cap.release()
@@ -91,14 +92,18 @@ class BasicAnalyzer:
         starts = actual_events.groupby(actual_events.event_id).frame.min() / 30
         stops = actual_events.groupby(actual_events.event_id).frame.max() / 30
         event_lens = (stops - starts).values
-        summary_dict = {
-            'n_mouthing_events': len(actual_events.event_id.unique()),
-            'mean_event_len_secs': np.mean(event_lens),
-            'max_event_len_secs': np.max(event_lens),
-            'min_event_len_secs': np.min(event_lens),
-            'med_event_len_secs': np.median(event_lens),
-            'std_event_len_secs': np.std(event_lens)
-        }
+        n_mouthing_events = len(actual_events.event_id.unique())
+        if n_mouthing_events:
+            summary_dict = {
+                'n_mouthing_events': n_mouthing_events,
+                'mean_event_len_secs': np.mean(event_lens),
+                'max_event_len_secs': np.max(event_lens),
+                'min_event_len_secs': np.min(event_lens),
+                'med_event_len_secs': np.median(event_lens),
+                'std_event_len_secs': np.std(event_lens)
+            }
+        else:
+            summary_dict = {'n_mouthing_events': 0}
         pd.Series(summary_dict).to_csv(output_path, header=False)
 
     def parse_tracks(self):
@@ -134,10 +139,11 @@ class BasicAnalyzer:
 
 
 start = time.time()
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
-# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group1\BHVE_group1.mp4"
+#vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group3\BHVE_group3.mp4"
+vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\CTRL_group3\CTRL_group3.mp4"
 ba = BasicAnalyzer(vid)
-# ba.summarize_tracks()
-# ba.summarize_mouthing_events()
+ba.summarize_tracks()
+ba.summarize_mouthing_events()
 print(time.time() - start)
 

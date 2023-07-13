@@ -1,10 +1,13 @@
 from pathlib import Path
+from moviepy.editor import ImageSequenceClip
+import matplotlib.pyplot as plt
 import pandas as pd
 import cv2
 import numpy as np
 from demba.utils.roi_utils import estimate_roi
-from itertools import combinations
+from shutil import rmtree
 idx = pd.IndexSlice
+
 
 
 class Featurizer:
@@ -12,7 +15,11 @@ class Featurizer:
     def __init__(self, video_path):
         self.video_path = video_path
         self.h5_path = str(next(Path(self.video_path).parent.glob(Path(self.video_path).stem + '*_filtered.h5')))
+        self.output_dir = str(Path(self.video_path).parent / 'output')
+        self._load_pose_data()
+        self._estimate_roi()
         self.feature_matrix = None
+
 
     def _load_pose_data(self):
         self.pose_df = pd.read_hdf(self.h5_path)
@@ -25,13 +32,13 @@ class Featurizer:
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) // 2)
         ret, frame = cap.read()
         if not ret:
             print(f'could not extract a reference frame from {Path(self.video_path).name}')
             return
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        roi_vis_path = str(Path(self.video_path).parent / (Path(self.video_path).stem + '_roi.png'))
+        roi_vis_path = str(Path(self.output_dir) / (Path(self.video_path).stem + '_roi.png'))
         self.roi_x, self.roi_y, self.roi_r = estimate_roi(frame, output_path=roi_vis_path)
         self.frame_height, self.frame_width = frame.shape[:-1]
         cap.release()
@@ -45,6 +52,8 @@ class Featurizer:
         individual_feature_matrices = []
         for individual in self.individuals:
             individual_feature_matrices.append(self.extract_individual_features(individual))
+        # add additional feature calculation functions here
+        self.feature_matrix = pd.concat(individual_feature_matrices, axis=0)
 
 
     def generate_feature_matrix_old(self):
@@ -80,9 +89,13 @@ class Featurizer:
         centroid_y = self.calc_centroid(individual, 'y')
         dist_from_roi_center = self.calc_dist_from_roi_center(centroid_x, centroid_y)
         is_inside_roi = self.calc_is_inside_roi(dist_from_roi_center)
-        speed, tangential_acceleration, centripetal_acceleration = self.calc_centroid_speed(centroid_x, centroid_y)
+        speed, tangential_acceleration, centripetal_acceleration = self.calc_instantaneous_centroid_kinetics(centroid_x, centroid_y)
+        id_number = pd.Series(int(individual[-1]), index=centroid_x.index)
+        id_number.name = 'id_number'
+        df = pd.concat([id_number, centroid_x, centroid_y, dist_from_roi_center, is_inside_roi, speed,
+                        tangential_acceleration, centripetal_acceleration], axis=1)
+        return df
 
-        return [centroid_x, centroid_y, dist_from_roi_center, is_inside_roi, speed, tangential_acceleration, centripetal_acceleration]
     def extract_individualized_social_features(self, frame_number, individual):
         """extract features that describe the spatial relationship of the focal individual to other individuals in the
         frame, and which can vary between individuals in the frame
@@ -132,6 +145,7 @@ class Featurizer:
         is_inside_roi.name = 'is_inside_roi'
         return is_inside_roi
 
+    def calc_
     def calc_instantaneous_centroid_kinetics(self, centroid_x, centroid_y):
         # should probably improve this module with a kalman filter or similar
         dz = (centroid_x + 1j * centroid_y).diff()
@@ -150,10 +164,44 @@ class Featurizer:
 
         return [speed, tangential_acceleration, centripetal_acceleration]
 
+    def visualize_features(self, n_frames=900):
+        cap = cv2.VideoCapture(self.video_path)
+        tmp_dir = Path(self.output_dir) / 'tmp'
+        tmp_dir.mkdir(exist_ok=True)
+        count = 0
+        fig, ax = plt.subplots()
 
-    def get_id_number(self):
-        pass
+        while count <= n_frames:
+            ax.clear()
+            ret, frame = cap.read()
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if not ret:
+                break
+            count += 1
+            ax.imshow(frame)
+            features = self.feature_matrix.loc[count]
+            for row in features.iterrows():
+                centroid = [row[1].centroid_x, row[1].centroid_y]
+                ax.plot(*centroid, 'ro')
+                vector_origins = [[centroid[0]]*3, [centroid[1]]*3]
 
+                ax.quiver(vector_origins, )
+            fig.tight_layout()
+            fig.savefig(str(tmp_dir / f'{count:05}.png'))
+
+        plt.close(fig)
+        cap.release()
+        out_path = str(Path(self.output_dir) / 'feature_visualization.mp4')
+        ImageSequenceClip(str(tmp_dir), 30).write_videofile(out_path, fps=30, audio=False)
+        rmtree(tmp_dir)
+
+
+
+
+vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
+feat = Featurizer(vid)
+feat.generate_feature_matrix()
+feat.visualize_features(n_frames=30)
 
 
 
