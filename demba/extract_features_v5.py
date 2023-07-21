@@ -203,9 +203,3 @@ feat = Featurizer(vid)
 feat.generate_feature_matrix()
 feat.visualize_features(n_frames=30)
 
-
-
-
-
-
-

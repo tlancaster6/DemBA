@@ -138,12 +138,10 @@ class BasicAnalyzer:
         return summary_dict
 
 
-start = time.time()
 #vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group3\BHVE_group3.mp4"
 vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\CTRL_group3\CTRL_group3.mp4"
 ba = BasicAnalyzer(vid)
 ba.summarize_tracks()
 ba.summarize_mouthing_events()
-print(time.time() - start)
 
