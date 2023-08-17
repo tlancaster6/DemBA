@@ -12,10 +12,11 @@ def analyze_video(config_path, video_path, n_fish=3):
     cfg = dlc.utils.read_config(config_path)
     while n_fish > 0:
         try:
-            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish, animal_names=cfg['individuals'])
+            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish)
             break
-        except ValueError:
+        except ValueError as e:
             print(f'failed to stitch tracklets with n_fish={n_fish}')
+            print(e)
             n_fish -= 1
     if n_fish == 0:
         print('stitching failed')
@@ -67,5 +68,8 @@ def fill_gaps(config_path, video_path):
 # def
 #
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
-config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\CTRL_group1\CTRL_group1.mp4"
+# config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
+
+config = '/home/tlancaster/DLC/demasoni_singlenuc/config.yaml'
+vid = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/CTRL_group1/CTRL_group1.mp4'
+analyze_video(config, vid)
