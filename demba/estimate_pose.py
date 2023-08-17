@@ -9,9 +9,10 @@ idx = pd.IndexSlice
 def analyze_video(config_path, video_path, n_fish=3):
     dlc.analyze_videos(config_path, [video_path], auto_track=False)
     dlc.convert_detections2tracklets(config_path, [video_path], track_method='ellipse')
+    cfg = dlc.utils.read_config(config_path)
     while n_fish > 0:
         try:
-            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish)
+            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish, animal_names=cfg['individuals'])
             break
         except ValueError:
             print(f'failed to stitch tracklets with n_fish={n_fish}')
@@ -66,4 +67,5 @@ def fill_gaps(config_path, video_path):
 # def
 #
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
-# config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
+config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
+vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\CTRL_group1\CTRL_group1.mp4"
