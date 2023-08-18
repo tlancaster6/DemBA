@@ -116,10 +116,12 @@ class FeatureExtractor:
         ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.trial_id, skiprows=1)
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end']]
         ref_df = (ref_df * 30).apply(np.round) - self.start_frame
-        ref_df = ref_df[]
         quivering = pd.Series(False, index=self.pose_df.index, name='quivering')
         for event in ref_df.iterrows():
-            if event.temporal_segment_start
+            start_in_range = self.start_frame < event.temporal_segment_start < self.end_frame
+            end_in_range = self.start_frame < event.temporal_segment_end < self.end_frame
+            if start_in_range and end_in_range:
+                quivering.iloc[]
 
 
 
