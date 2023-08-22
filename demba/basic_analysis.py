@@ -25,7 +25,7 @@ class Track:
 class BasicAnalyzer:
 
     def __init__(self, video_path):
-        self.video_path = video_path
+        self.video_path = str(video_path)
         self.h5_path = str(next(Path(self.video_path).parent.glob(Path(self.video_path).stem + '*_filtered.h5')))
         self.output_dir = str(Path(self.video_path).parent / 'output')
         if not os.path.exists(self.output_dir):
@@ -138,10 +138,20 @@ class BasicAnalyzer:
         return summary_dict
 
 
+
+analysis_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis")
+for video_dir in analysis_dir.glob('*'):
+    video_file = video_dir / f'{video_dir.name}.mp4'
+    if video_file.exists() and 'BHVE_group8' not in video_file.name:
+        print(f'analyzing {video_file.name}')
+        ba = BasicAnalyzer(video_file)
+        ba.summarize_tracks()
+        ba.summarize_mouthing_events()
+
 #vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group3\BHVE_group3.mp4"
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\CTRL_group3\CTRL_group3.mp4"
-ba = BasicAnalyzer(vid)
-ba.summarize_tracks()
-ba.summarize_mouthing_events()
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis\CTRL_group1\CTRL_group1.mp4"
+# ba = BasicAnalyzer(vid)
+# ba.summarize_tracks()
+# ba.summarize_mouthing_events()
 

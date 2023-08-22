@@ -6,12 +6,15 @@ import cv2
 idx = pd.IndexSlice
 
 
-def analyze_video(config_path, video_path, n_fish=3):
+def analyze_video(config_path, video_path, n_fish_max=3):
+    video_path = str(video_path)
     # dlc.analyze_videos(config_path, [video_path], auto_track=False)
     dlc.convert_detections2tracklets(config_path, [video_path], track_method='ellipse')
+    n_fish = n_fish_max
     while n_fish > 0:
         try:
-            dlc.stitch_tracklets(config_path, [video_path], split_tracklets=False, n_tracks=n_fish)
+            print(f'attempting stitching with n_tracks={n_fish}')
+            dlc.stitch_tracklets(config_path, [video_path], n_tracks=n_fish)
             break
         except ValueError as e:
             print(f'failed to stitch tracklets with n_fish={n_fish}')
@@ -20,9 +23,20 @@ def analyze_video(config_path, video_path, n_fish=3):
     if n_fish == 0:
         print('stitching failed')
         return
-    fill_gaps(config_path, video_path)
-    dlc.filterpredictions(config_path, video_path)
-    fix_individual_names(video_path)
+    # fill_gaps(config_path, video_path)
+    # dlc.filterpredictions(config_path, video_path)
+    # fix_individual_names(video_path)
+    print(f'analyzed {Path(video_path).name} successfully')
+def delete_outputs(video_path, keep_pose_data=True):
+    parent = Path(video_path).parent
+    targets = ['*_assemblies.pickle', '*_el.h5', '*_el.pickle', '*_filtered.csv', '*_filtered.h5', '*_labeled.mp4']
+    if not keep_pose_data:
+        targets.extend(['*_full.pickle', '*_meta.pickle', '*_full.mp4'])
+    for target in targets:
+        if list(parent.glob(target)):
+            list(parent.glob(target))[0].unlink()
+
+
 
 def fix_individual_names(video_path):
     h5_path = str(next(Path(video_path).parent.glob('*_filtered.h5')))
@@ -69,6 +83,17 @@ def fill_gaps(config_path, video_path):
 # vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\testclip\testclip.mp4"
 # config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
 
-config = '/home/tlancaster/DLC/demasoni_singlenuc/config.yaml'
-vid = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/CTRL_group1/CTRL_group1.mp4'
-analyze_video(config, vid)
+# config = '/home/tlancaster/DLC/demasoni_singlenuc/config.yaml'
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis\BHVE_group8\BHVE_group8.mp4"
+config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
+# analyze_video(config, vid)
+
+analysis_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis")
+for video_dir in analysis_dir.glob('*'):
+    video_file = video_dir / f'{video_dir.name}.mp4'
+    # if video_file.exists() and not list(video_dir.glob('*_el.h5')) and 'group8' not in video_file.name:
+    if video_file.exists() and 'BHVE_group8' not in video_file.name:
+        # analyze_video(config, video_file)
+        # dlc.filterpredictions(config, str(video_file)) 
+        inds = list(pd.read_hdf(list(video_dir.glob('*_filtered.h5'))[0]).columns.get_level_values('individuals').unique())
+        dlc.create_labeled_video(config, [str(video_file)], filtered=True, color_by='individual', displayedindividuals=inds, overwrite=True)

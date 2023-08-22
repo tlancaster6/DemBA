@@ -19,11 +19,15 @@ def split_video_ffmpeg(video_file, clip_len_mins=1, vid_len_mins=210):
         t1 += clip_len_secs
 
 
-def split_video_opencv(video_file, clip_len_frames=1800):
+def split_video_opencv(video_file, clip_len_frames=1800, overwrite=True):
     print(f'splitting {Path(video_file).name}')
     output_dir = Path(video_file).parent / 'clips'
     if output_dir.exists():
-        rmtree(str(output_dir))
+        if overwrite:
+            rmtree(str(output_dir))
+        else:
+            print(f'splitting already complete for {Path(video_file).name}')
+            return
     output_dir.mkdir()
     cap = cv2.VideoCapture(str(video_file))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -51,8 +55,8 @@ def split_video_opencv(video_file, clip_len_frames=1800):
 
 
 
-analysis_dir = Path("/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos")
+analysis_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\analysis")
 for video_dir in analysis_dir.glob('*'):
     video_file = video_dir / f'{video_dir.name}.mp4'
     if video_file.exists():
-        split_video_opencv(video_file)
+        split_video_opencv(video_file, overwrite=False)
