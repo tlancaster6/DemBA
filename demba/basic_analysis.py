@@ -4,7 +4,7 @@ import pandas as pd
 import cv2
 import os
 from demba.utils.roi_utils import estimate_roi
-from itertools import permutations
+from itertools import permutations, combinations
 import numpy as np
 import matplotlib as mpl
 from dbscan1d.core import DBSCAN1D
@@ -136,6 +136,34 @@ class BasicAnalyzer:
         output_path = str(Path(self.output_dir) / 'track_summaries.csv')
         pd.Series(summary_dict).to_csv(output_path, header=False)
         return summary_dict
+
+    def calc_keypoint_pair_dists(self, multiindex=True):
+        sub_df = self.pose_df.loc[self.calc_nfish_frame() >= 2, :]
+        if len(sub_df) == 0:
+            print('no frames found with 2 or more fish. skipping keypoint pair distance calculations')
+            return
+        new_df_column_index = []
+        for i1, i2 in list(combinations(self.individuals, 2)):
+            for bp in self.bodyparts:
+                new_df_column_index.append(tuple((i1, i2, bp)))
+        new_df_data = []
+        for i1, i2, bp in new_df_column_index:
+            dists = sub_df.loc[:, idx[i1, bp, :]].values - sub_df.loc[:, idx[i2, bp, :]].values
+            new_df_data.append(np.hypot(dists[:, 0], dists[:, 1]))
+        if multiindex:
+            new_df_column_index = pd.MultiIndex.from_tuples(new_df_column_index)
+        else:
+            new_df_column_index = ['_'.join([i1, i2, bp]) for i1, i2, bp in new_df_column_index]
+        new_df_data = np.vstack(new_df_data).T
+        new_df = pd.DataFrame(data=new_df_data, columns=new_df_column_index, index=sub_df.index)
+        return new_df
+
+
+
+
+
+
+
 
 
 

@@ -145,7 +145,6 @@ class Featurizer:
         is_inside_roi.name = 'is_inside_roi'
         return is_inside_roi
 
-    def calc_
     def calc_instantaneous_centroid_kinetics(self, centroid_x, centroid_y):
         # should probably improve this module with a kalman filter or similar
         dz = (centroid_x + 1j * centroid_y).diff()
