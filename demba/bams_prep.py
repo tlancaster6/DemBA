@@ -1,3 +1,4 @@
+import os.path
 from pathlib import Path
 import pandas as pd
 import cv2
@@ -5,15 +6,15 @@ from demba.utils.roi_utils import estimate_roi
 import re
 from itertools import permutations, combinations
 import numpy as np
-import matplotlib as mpl
+import matplotlib.pyplot as plt
 from dbscan1d.core import DBSCAN1D
 idx = pd.IndexSlice
-
+from matplotlib.animation import FuncAnimation
 
 
 class FeatureExtractor:
 
-    def __init__(self, video_path, quivering_annotation_path):
+    def __init__(self, video_path, quivering_annotation_path, overwrite=False):
         self.video_path = str(video_path)
         self.quivering_annotation_path = str(quivering_annotation_path)
         self.file_stem = Path(video_path).stem
@@ -25,7 +26,9 @@ class FeatureExtractor:
         self.pose_df = self._load_pose_data()
         self.individuals, self.bodyparts = [list(self.pose_df.columns.levels[i]) for i in [0, 1]]
         self.roi_x, self.roi_y, self.roi_r, self.frame_height, self.frame_width = self._estimate_roi()
-        self.framefeatures_df, self.clipfeatures_df = None, None
+        if overwrite or not (os.path.exists(self.framefeatures_path) and os.path.exists(self.clipfeatures_path)):
+            self.extract_all_features()
+        self._load_feature_csvs()
 
     def _load_pose_data(self):
         pose_df = pd.read_hdf(self.h5_path)
@@ -35,6 +38,10 @@ class FeatureExtractor:
         pose_df.columns = pose_df.columns.remove_unused_levels()
         pose_df = pose_df.sort_index(axis=1)
         return pose_df
+
+    def _load_feature_csvs(self):
+        self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0)
+        self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0)
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
@@ -56,6 +63,7 @@ class FeatureExtractor:
         framefeatures_df.append(self._calc_nfish_frame())
         framefeatures_df.append(self._calc_nfish_pipe())
         framefeatures_df.append(self._detect_mouthing_events())
+        framefeatures_df.append(self._map_quivering_annotations())
         framefeatures_df = pd.concat(framefeatures_df, axis=1)
         self.framefeatures_df = framefeatures_df
         self.framefeatures_df.to_csv(self.framefeatures_path)
@@ -66,6 +74,7 @@ class FeatureExtractor:
         clipfeatures_series['nfish_frame_max'] = framefeatures_df.nfish_frame.max()
         clipfeatures_series['nfish_pipe_max'] = framefeatures_df.nfish_pipe.max()
         clipfeatures_series['roi_x'], clipfeatures_series['roi_y'], clipfeatures_series['roi_r'] = self.roi_x, self.roi_y, self.roi_r
+        clipfeatures_series['quivering_fraction'] = self._calc_quivering_fraction()
         clipfeatures_series = pd.concat([clipfeatures_series, self._calc_roi_occupancy_fractions()])
         self.clipfeatures_df = pd.DataFrame(clipfeatures_series, columns=[self.file_stem]).T
         self.clipfeatures_df.to_csv(self.clipfeatures_path)
@@ -81,9 +90,16 @@ class FeatureExtractor:
         subthresh_frames = dists.loc[dists < dist_thresh].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
+        for eid in event_ids.unique():
+            if eid != -1:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
         event_ids.name = 'mouthing_event_id'
         return event_ids
 
+    def _detect_circling_events(self):
+        pass
     def _calc_nfish_frame(self):
         nfish_frame = self.pose_df.groupby('individuals', axis=1).any().sum(axis=1)
         nfish_frame.name = 'nfish_frame'
@@ -112,29 +128,102 @@ class FeatureExtractor:
                                                   3: 'triple_occupancy_fraction'})
         return value_counts
 
+    def _calc_quivering_fraction(self):
+        quivering_fraction = self.framefeatures_df.quivering.sum() / len(self.framefeatures_df)
+        return quivering_fraction
+
     def _map_quivering_annotations(self):
         ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.trial_id, skiprows=1)
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end']]
         ref_df = (ref_df * 30).apply(np.round) - self.start_frame
         quivering = pd.Series(False, index=self.pose_df.index, name='quivering')
         for event in ref_df.iterrows():
-            start_in_range = self.start_frame < event.temporal_segment_start < self.end_frame
-            end_in_range = self.start_frame < event.temporal_segment_end < self.end_frame
+            event = event[1]
+            start_in_range = 0 < event.temporal_segment_start < quivering.index.max()
+            end_in_range = 0 < event.temporal_segment_end < quivering.index.max()
             if start_in_range and end_in_range:
-                quivering.iloc[]
+                quivering.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
+            elif start_in_range:
+                quivering.iloc[int(event.temporal_segment_start): quivering.index.max()] = True
+            elif end_in_range:
+                quivering.iloc[0: int(event.temporal_segment_end)] = True
+        return quivering
+
+    def visualize_features(self, overwrite=True):
+        def grab_frame(vid_cap, frame_number):
+            vid_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame = vid_cap.read()
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        def grab_framefeatures_as_strings(frame):
+            feats = [f'frame = {frame}']
+            feats.extend([f'{feat} = {val}' for feat, val in list(self.framefeatures_df.loc[frame].items())])
+            return feats
+
+        out_path = str(self.video_path).replace('.mp4', '_featurevis.mp4')
+        if not overwrite and os.path.exists(out_path):
+            return
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        axes[1].axis('off')
+        cap = cv2.VideoCapture(self.video_path)
+        im = axes[0].imshow(grab_frame(cap, 0))
+        feat_strings = grab_framefeatures_as_strings(0)
+        y_positions = np.linspace(0.1, 0.9, len(feat_strings))
+        txt_array = [axes[1].text(0.1, y_positions[i], feat_strings[i]) for i in range(len(feat_strings))]
+
+        def animate(i):
+            im.set_data(grab_frame(cap, i))
+            feat_strings = grab_framefeatures_as_strings(i)
+            [txt.set_text(feat) for txt, feat in list(zip(txt_array, feat_strings))]
+            return *txt_array, im
+
+        n_frames = len(self.framefeatures_df)
+        anim = FuncAnimation(
+            fig,
+            animate,
+            frames=n_frames,
+            interval=1000 / 30,
+            )
+
+        anim.save(out_path, writer='ffmpeg', fps=30)
+        cap.release()
+        plt.close('all')
 
 
+def concat_clipfeature_csvs(parent_dir):
+    parent_dir = Path(parent_dir)
+    clipfeature_csv_paths = list(parent_dir.glob('**/*_clipfeatures.csv'))
+    rows = []
+    for csv_path in clipfeature_csv_paths:
+        rows.append(pd.read_csv(str(csv_path), index_col=0))
+    df = pd.concat(rows, axis=0)
+    df.to_csv(str(parent_dir / 'collated_clipfeatures.csv'))
+    pd.concat(rows, axis=0)
 
 
+def process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=False):
+    parent_dir = Path(parent_dir)
+    vid_paths = list(parent_dir.glob('**/*.mp4'))
+    pattern = '((CTRL)|(BHVE))_group\d_\d{6}-\d{6}.mp4'
+    vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+    for vp in vid_paths:
+        print(f'processing {vp.stem}')
+        fe = FeatureExtractor(vp, quivering_annotation_path, overwrite=overwrite)
+        if visualize:
+            print(f'generating visualization for {vp.stem}')
+            fe.visualize_features()
 
 
+# scratch code
 
-parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1')
-quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-vid_paths = list(parent_dir.glob('**/*.mp4'))
-pattern = '((CTRL)|(BHVE))_group\d_\d{6}-\d{6}.mp4'
-vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
-for vp in vid_paths:
-    feature_extractor = FeatureExtractor(vp, quivering_annotation_path)
-    feature_extractor.extract_all_features()
-    break
+parent_dir = Path(r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1')
+quivering_annotation_path = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\quivering_annotations\Mbuna_behavior_annotations.xlsx"
+# process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
+# concat_clipfeature_csvs(parent_dir)
+process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=True)
+
+# vid_path = r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\test\1_fish\BHVE_group1_345600-347399.mp4'
+# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
+# fe.visualize_features()
+
+

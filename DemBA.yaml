@@ -1,0 +1,20 @@
+name: DemBA
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - pip
+  - ipython
+  - jupyter
+  - nb_conda
+  - notebook<7.0.0
+  - ffmpeg
+  - cudatoolkit=11.2
+  - cudnn=8.1.0
+  - seaborn
+  - openpyxl
+  - pip:
+    - "deeplabcut[gui,tf]"
+    - numpy<1.24
+    - dbscan1d
