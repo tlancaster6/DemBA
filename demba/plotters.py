@@ -34,6 +34,21 @@ def plot_double_occupancy_event_summary(video_paths, plot_dir):
     fig.savefig(str(plot_dir / 'double_occupancy_counts.pdf'))
     plt.close(fig)
 
+def plot_double_occupancy_fractions(video_paths, plot_dir):
+    double_occupancy_fractions = {}
+    for vp in video_paths:
+        df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
+        frac = len(df[df.double_occupancy_event_id >= 0]) / len(df)
+        double_occupancy_fractions.update({vp.stem: frac})
+    df = pd.DataFrame(double_occupancy_fractions.items(), columns=['trial', 'double_occupancy_fraction'])
+    fig, ax = plt.subplots()
+    sns.barplot(df, x='trial', y='double_occupancy_fraction', ax=ax)
+    ax.set(title='fraction of frames that are within double-occupancy events by trial')
+    ax.tick_params(axis='x', labelrotation=90)
+    fig.tight_layout()
+    fig.savefig(str(plot_dir / 'double_occupancy_fractions.pdf'))
+    plt.close(fig)
+
 def plot_quivering_event_summary(quivering_annotation_file, plot_dir):
     trial_ids = [f'{prefix}_group{suffix}' for prefix in ['BHVE', 'CTRL'] for suffix in [1, 2, 3, 5, 6, 7, 8, 9]]
     data = []
@@ -103,6 +118,46 @@ def plot_all_timeseries(vid_paths, plot_dir):
             fig.savefig(str(plot_dir / f'{split}_{feat}_timeseries.pdf'))
             plt.close(fig)
 
+def plot_all_timeseries_kde(vid_paths, plot_dir):
+    data = {}
+    names = []
+    features = ['mouthing', 'quivering', 'double_occupancy']
+    for vp in vid_paths:
+        names.append(vp.stem)
+        df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
+        df['mouthing_event_id'] = df['mouthing_event_id'] >= 0
+        df.rename(columns={'mouthing_event_id':  'mouthing'}, inplace=True)
+        df['double_occupancy_event_id'] = df['double_occupancy_event_id'] >= 0
+        df.rename(columns={'double_occupancy_event_id':  'double_occupancy'}, inplace=True)
+        data.update({names[-1]: df})
+    for name in names:
+        fig, axes = plt.subplots(len(features), 1, figsize=(13.3, 7.5), sharex=True)
+        for i, feat in enumerate(features):
+            try:
+                sns.kdeplot(x=data[name].index, y=data[name][feat], ax=axes[i], lw=0.5)
+            except KeyError:
+                pass
+            axes[i].set_xlabel('frame')
+            axes[i].set_ylabel(feat, rotation='horizontal', labelpad=40)
+        fig.suptitle(name)
+        fig.tight_layout()
+        fig.savefig(str(plot_dir / f'{name}_kde.pdf'))
+        plt.close(fig)
+    names_split = {'CTRL': [n for n in names if 'CTRL' in n], 'BHVE': [n for n in names if 'BHVE' in n]}
+    for feat in features:
+        for split, names in names_split.items():
+            fig, axes = plt.subplots(len(names), 1, figsize=(13.3, 7.5), sharex=True, sharey=True)
+            for i, name in enumerate(names):
+                try:
+                    sns.kdeplot(x=data[name].index, y=data[name][feat], ax=axes[i])
+                except KeyError:
+                    pass
+                axes[i].set_xlabel('frame')
+                axes[i].set_ylabel(name, rotation='horizontal', labelpad=40)
+            fig.suptitle(feat)
+            fig.tight_layout()
+            fig.savefig(str(plot_dir / f'{split}_{feat}_kde.pdf'))
+            plt.close(fig)
 
 
 quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
@@ -111,8 +166,10 @@ vid_paths = list(parent_dir.glob('**/*.mp4'))
 pattern = '((CTRL)|(BHVE))_group\d.mp4'
 vid_paths = sorted([p for p in vid_paths if re.fullmatch(pattern, p.name)])
 plot_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Plots')
-plot_all_timeseries(vid_paths, plot_dir)
-plot_mouthing_event_summary(vid_paths, plot_dir)
-plot_quivering_event_summary(quivering_annotation_path, plot_dir)
-plot_double_occupancy_event_summary(vid_paths, plot_dir)
+# plot_all_timeseries(vid_paths, plot_dir)
+# plot_mouthing_event_summary(vid_paths, plot_dir)
+# plot_quivering_event_summary(quivering_annotation_path, plot_dir)
+# plot_double_occupancy_event_summary(vid_paths, plot_dir)
+# plot_double_occupancy_fractions(vid_paths, plot_dir)
 # plot_mouthing_event_summary(analysis_dir, plot_dir)
+plot_all_timeseries_kde(vid_paths, plot_dir)
