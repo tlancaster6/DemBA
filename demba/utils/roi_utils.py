@@ -19,7 +19,7 @@ def generate_roi_visualization(img, cx, cy, r, output_path):
     plt.close(fig)
 
 
-def estimate_roi(img, rmin=125, rmax=250, hmin=0.4, hmax=0.5, output_path=None, save_intermediates=False):
+def estimate_roi(img, rmin=125, rmax=250, hmin=0.4, hmax=0.5, output_path=None):
     """uses a combination of hue thresholding, morphological manipulations, and a hough circle transform to
     automatically estimate the coordinates and radius (in pixels) of a circle that encloses the roi"""
     img_rgb = img

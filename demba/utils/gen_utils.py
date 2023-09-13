@@ -31,7 +31,8 @@ def avg_heading(headings):
 
 
 def get_frame_size(video_path):
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(str(video_path))
     ret, frame = cap.read()
     h, w = frame.shape[:-1]
+    cap.release()
     return h, w
