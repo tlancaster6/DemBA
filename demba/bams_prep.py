@@ -214,16 +214,16 @@ def process_all(parent_dir, quivering_annotation_path, overwrite=False, visualiz
             fe.visualize_features()
 
 
-# scratch code
-
-parent_dir = Path(r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1')
-quivering_annotation_path = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\quivering_annotations\Mbuna_behavior_annotations.xlsx"
-# process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
-# concat_clipfeature_csvs(parent_dir)
-process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=True)
-
-# vid_path = r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\test\1_fish\BHVE_group1_345600-347399.mp4'
-# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
-# fe.visualize_features()
+# # scratch code
+#
+# parent_dir = Path(r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1')
+# quivering_annotation_path = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\quivering_annotations\Mbuna_behavior_annotations.xlsx"
+# # process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
+# # concat_clipfeature_csvs(parent_dir)
+# process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=True)
+#
+# # vid_path = r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\test\1_fish\BHVE_group1_345600-347399.mp4'
+# # fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
+# # fe.visualize_features()
 
 
