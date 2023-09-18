@@ -10,15 +10,15 @@ idx = pd.IndexSlice
 
 class BamsPrepper:
 
-    def __init__(self, video_path: Path):
-        self.video_path = video_path
-        self.frame_h, self.frame_w = get_frame_size(video_path)
-        self.h5_path = str(next(self.video_path.parent.glob(self.video_path.stem + '*_filtered.h5')))
+    def __init__(self, h5_path: Path):
+        self.frame_h, self.frame_w = 900, 720
+        self.h5_path = h5_path
+        self.video_path = Path(str(self.h5_path).split('DLC_dlcrnet')[0] + '.mp4')
         self.pose_df = self._load_pose_data()
         self.refined_pose_df = self.pose_df.copy()
         self.individuals, self.bodyparts = [list(self.pose_df.columns.levels[i]) for i in [0, 1]]
 
-    def refine_pose_data(self, min_track_len=10, min_keypoints=4, border_crop_width=10):
+    def refine_pose_data(self, min_track_len=10, min_keypoints=4, border_crop_width=0):
         """
         pseudocode
         -----------
@@ -55,7 +55,7 @@ class BamsPrepper:
                 if (stop - start) < min_track_len:
                     self.refined_pose_df.loc[start:stop, ind] = np.nan
 
-    def segment_data(self, min_segment_len=30):
+    def segment_data(self, min_segment_len=60):
         """
         psuedocode
         ----------
@@ -115,11 +115,11 @@ class BamsPrepper:
         return pose_df
 
 
-def process_all(video_paths, collated_data_file, roi_ref_frame=False):
+def process_all(h5_paths, collated_data_file, roi_ref_frame=False):
     collated_df = []
-    for vp in video_paths:
-        print(f'processing {vp.name}')
-        bp = BamsPrepper(vp)
+    for h5p in h5_paths:
+        print(f'processing {h5p.name}')
+        bp = BamsPrepper(h5p)
         bp.refine_pose_data()
         bp.segment_data()
         if roi_ref_frame:
@@ -129,13 +129,55 @@ def process_all(video_paths, collated_data_file, roi_ref_frame=False):
     collated_df = pd.concat(collated_df)
     collated_df.to_excel(str(collated_data_file))
 
+def read_collated_excel(path):
+    return pd.read_excel(path, index_col=(0, 1, 2), header=(0, 1, 2))
 
-parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/')
-vid_paths = list(parent_dir.glob('**/*.mp4'))
-pattern = r'((CTRL)|(BHVE))_group\d_\d{6}-\d{6}.mp4'
-video_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+def summarize_collated_data(path):
+    df = read_collated_excel(path)
+    n_videos = len(df.index.get_level_values(0).unique())
+    n_segments = df.groupby(['video_name', 'segment_id']).ngroups
+    avg_segments_per_video = n_segments / n_videos
+    avg_segment_len_frames = df.groupby(['video_name', 'segment_id']).size().mean()
+    med_segment_len_frames = df.groupby(['video_name', 'segment_id']).size().median()
+    min_segment_len_frames = df.groupby(['video_name', 'segment_id']).size().min()
+    total_number_of_frames = len(df)
+    print(f'{n_videos} videos were split into {n_segments} segments total (avg of {avg_segments_per_video} segments '
+          f'per video). Segments had a mean length of {avg_segment_len_frames} frames and median length of '
+          f'{med_segment_len_frames} frames. The shortest segment was {min_segment_len_frames}. A total of '
+          f'{total_number_of_frames} frames are available across all segments')
 
-collated_data_file = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/collated_pose_data.xlsx')
-process_all(video_paths, collated_data_file)
-collated_data_file = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/collated_pose_data_shifted.xlsx')
-process_all(video_paths, collated_data_file, roi_ref_frame=True)
+def collate_raw_data(h5_paths, output_path):
+    pass
+
+
+
+
+# parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/')
+# parent_dir = Path(r"C:\Users\tucke\Downloads\BAMS_set1")
+# vid_paths = list(parent_dir.glob('**/*.mp4'))
+# pattern = r'((CTRL)|(BHVE))_group\d_\d{6}-\d{6}.mp4'
+# video_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+#
+# collated_data_file = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/collated_pose_data.xlsx')
+# process_all(video_paths, collated_data_file)
+# collated_data_file = Path('/home/tlancaster/DLC/demasoni_singlenuc/BAMS_set1/collated_pose_data_shifted.xlsx')
+# process_all(video_paths, collated_data_file, roi_ref_frame=True)
+#
+# h5_path = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\3_fish\BHVE_group1_113400-115199DLC_dlcrnetms5_demasoni_singlenucMay23shuffle1_50000_el_filtered.h5"
+# bp = BamsPrepper(Path(h5_path))
+
+# parent_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1")
+# h5_paths = list(parent_dir.glob('**/*filtered.h5'))
+# collated_data_file = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\collated_pose_data.xlsx")
+# process_all(h5_paths, collated_data_file)
+# summarize_collated_data(collated_data_file)
+
+# h5_path = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\Analysis\Videos\BHVE_group1\BHVE_group1DLC_dlcrnetms5_demasoni_singlenucMay23shuffle1_50000_el_filtered.h5"
+# bp = BamsPrepper(Path(h5_path))
+
+parent_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1")
+h5_paths = list(parent_dir.glob('**/*filtered.h5'))
+collated_pose_data_path = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\collated_pose_data.h5")
+
+
+
