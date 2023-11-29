@@ -68,6 +68,7 @@ class FeatureExtractor:
             framefeatures_df.append(self._calc_nfish_pipe())
             framefeatures_df.append(self._detect_mouthing_events())
             framefeatures_df.append(self._detect_double_occupancy_events())
+            framefeatures_df.append(self._detect_spawning_events())
         framefeatures_df.append(self._map_quivering_annotations())
         framefeatures_df = pd.concat(framefeatures_df, axis=1)
         self.framefeatures_df = framefeatures_df
@@ -79,6 +80,7 @@ class FeatureExtractor:
         if self.pose_df is not None:
             clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
             clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
+            clipfeatures_series['n_spawning_events'] = self._calc_n_spawning_events()
             clipfeatures_series['nfish_frame_max'] = framefeatures_df.nfish_frame.max()
             clipfeatures_series['nfish_pipe_max'] = framefeatures_df.nfish_pipe.max()
             clipfeatures_series['roi_x'], clipfeatures_series['roi_y'], clipfeatures_series['roi_r'] = self.roi_x, self.roi_y, self.roi_r
@@ -116,7 +118,26 @@ class FeatureExtractor:
                 event_ids.loc[start_idx:end_idx] = eid
         event_ids.name = 'double_occupancy_event_id'
         return event_ids
-        pass
+
+    def _detect_spawning_events(self, dist_thresh=25, eps=150, min_samples=150):
+        candidate_dists = []
+        for id1, id2 in list(permutations(self.individuals, 2)):
+            dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
+            candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
+        if not candidate_dists:
+            return pd.Series(data=-1, index=self.pose_df.index, name='spawning_event_id')
+        dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
+        subthresh_frames = dists.loc[dists < dist_thresh].index.values
+        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
+        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
+        for eid in event_ids.unique():
+            if eid != -1:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
+        event_ids.name = 'spawning_event_id'
+        return event_ids
+
     def _calc_nfish_frame(self):
         nfish_frame = self.pose_df.groupby('individuals', axis=1).any().sum(axis=1)
         nfish_frame.name = 'nfish_frame'
@@ -132,14 +153,24 @@ class FeatureExtractor:
         return nfish_pipe
 
     def _calc_n_mouthing_events(self):
-        event_ids = self.framefeatures_df[self.framefeatures_df.mouthing_event_id >=0].mouthing_event_id
+        event_ids = self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0].mouthing_event_id
         n_events = len(event_ids.unique())
         return n_events
 
     def _calc_n_double_occupancy_events(self):
-        event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >=0].double_occupancy_event_id
+        event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >=0 ].double_occupancy_event_id
         n_events = len(event_ids.unique())
         return n_events
+
+    def _calc_n_spawning_events(self):
+        event_ids = self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0].spawning_event_id
+        n_events = len(event_ids.unique())
+        return n_events
+
+    def _calc_spawning_fraction(self):
+        n_spawning_frames = len(self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0])
+        spawning_fraction = n_spawning_frames / len(self.framefeatures_df)
+        return spawning_fraction
 
     def _calc_roi_occupancy_fractions(self):
         value_counts = self.framefeatures_df.nfish_pipe.value_counts(normalize=True)
@@ -254,10 +285,10 @@ def delete_outputs(parent_dir, keep_pose_data=True):
 
 # scratch code
 
-parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
-quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
-concat_clipfeature_csvs(parent_dir)
+# parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
+# quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
+# process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
+# concat_clipfeature_csvs(parent_dir)
 
 #process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=True)
 # vid_path = r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\test\1_fish\BHVE_group1_345600-347399.mp4'
@@ -265,6 +296,6 @@ concat_clipfeature_csvs(parent_dir)
 # fe.visualize_features()
 
 
-# vid_path = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/CTRL_group1/CTRL_group1.mp4'
-# quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
+vid_path = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/CTRL_group1/CTRL_group1.mp4'
+quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
+fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)

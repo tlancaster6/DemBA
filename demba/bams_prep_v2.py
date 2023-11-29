@@ -105,6 +105,14 @@ class BamsPrepper:
         reformatted_pose_df.set_index(['video_name', 'segment_id', 'frame'], inplace=True)
         return reformatted_pose_df
 
+    def calculate_excluded_proportion(self):
+        """
+        returns the fraction of occupied frames in the original data that were excluded through refinement and segmenting
+        """
+        n_frames_original = self.pose_df.any(axis=1).sum()
+        n_frames_refined = (self.refined_pose_df.segment_id >= 0).sum()
+        return (n_frames_original - n_frames_refined) / n_frames_original
+
     def _load_pose_data(self):
         pose_df = pd.read_hdf(self.h5_path)
         scorer = pose_df.columns.get_level_values(0)[0]
@@ -117,6 +125,7 @@ class BamsPrepper:
 
 def process_all(h5_paths, collated_data_file, roi_ref_frame=False):
     collated_df = []
+    exclusion_fractions = []
     for h5p in h5_paths:
         print(f'processing {h5p.name}')
         bp = BamsPrepper(h5p)
@@ -125,9 +134,16 @@ def process_all(h5_paths, collated_data_file, roi_ref_frame=False):
         if roi_ref_frame:
             bp.shift_to_roi_reference_frame()
         collated_df.append(bp.format_for_saving())
+        exclusion_fractions.append(bp.calculate_excluded_proportion())
     print('collating and saving data')
     collated_df = pd.concat(collated_df)
     collated_df.to_excel(str(collated_data_file))
+    print('processing complete')
+    print('exclusion fraction statistics:')
+    print(f'\tmean={np.mean(exclusion_fractions)}')
+    print(f'\tstdev={np.std(exclusion_fractions)}')
+    print(f'\tmin={np.min(exclusion_fractions)}')
+    print(f'\tmax={np.max(exclusion_fractions)}')
 
 def read_collated_excel(path):
     return pd.read_excel(path, index_col=(0, 1, 2), header=(0, 1, 2))
