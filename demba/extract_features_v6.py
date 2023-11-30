@@ -8,6 +8,7 @@ from itertools import permutations, combinations
 import numpy as np
 import matplotlib.pyplot as plt
 from dbscan1d.core import DBSCAN1D
+from datetime import timedelta
 idx = pd.IndexSlice
 from matplotlib.animation import FuncAnimation
 
@@ -81,9 +82,13 @@ class FeatureExtractor:
             clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
             clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
             clipfeatures_series['n_spawning_events'] = self._calc_n_spawning_events()
+            clipfeatures_series['mouthing_event_fraction'] = self._calc_mouthing_event_fraction()
+            clipfeatures_series['double_occupancy_event_fraction'] = self._calc_double_occupancy_event_fraction()
+            clipfeatures_series['spawning_event_fraction'] = self._calc_spawning_event_fraction()
             clipfeatures_series['nfish_frame_max'] = framefeatures_df.nfish_frame.max()
             clipfeatures_series['nfish_pipe_max'] = framefeatures_df.nfish_pipe.max()
             clipfeatures_series['roi_x'], clipfeatures_series['roi_y'], clipfeatures_series['roi_r'] = self.roi_x, self.roi_y, self.roi_r
+            clipfeatures_series = pd.concat([clipfeatures_series, self._calc_roi_occupancy_fractions()])
         self.clipfeatures_df = pd.DataFrame(clipfeatures_series, columns=[self.file_stem]).T
         self.clipfeatures_df.to_csv(self.clipfeatures_path)
 
@@ -99,27 +104,27 @@ class FeatureExtractor:
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
         for eid in event_ids.unique():
-            if eid != -1:
+            if eid >= 0:
                 start_idx = event_ids[event_ids == eid].index.min()
                 end_idx = event_ids[event_ids == eid].index.max()
                 event_ids.loc[start_idx:end_idx] = eid
         event_ids.name = 'mouthing_event_id'
         return event_ids
 
-    def _detect_double_occupancy_events(self, eps=15, min_samples=15):
+    def _detect_double_occupancy_events(self, eps=30, min_samples=30):
         nfish_pipe = self._calc_nfish_pipe()
         double_occupancy_frames = nfish_pipe[nfish_pipe == 2].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(double_occupancy_frames)
         event_ids = pd.Series(data=labels, index=double_occupancy_frames).reindex(nfish_pipe.index, fill_value=-1)
         for eid in event_ids.unique():
-            if eid != -1:
+            if eid >= 0:
                 start_idx = event_ids[event_ids == eid].index.min()
                 end_idx = event_ids[event_ids == eid].index.max()
                 event_ids.loc[start_idx:end_idx] = eid
         event_ids.name = 'double_occupancy_event_id'
         return event_ids
 
-    def _detect_spawning_events(self, dist_thresh=25, eps=150, min_samples=150):
+    def _detect_spawning_events(self, dist_thresh=25, eps=150, min_samples=30):
         candidate_dists = []
         for id1, id2 in list(permutations(self.individuals, 2)):
             dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
@@ -131,7 +136,7 @@ class FeatureExtractor:
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
         for eid in event_ids.unique():
-            if eid != -1:
+            if eid >= 0:
                 start_idx = event_ids[event_ids == eid].index.min()
                 end_idx = event_ids[event_ids == eid].index.max()
                 event_ids.loc[start_idx:end_idx] = eid
@@ -158,7 +163,7 @@ class FeatureExtractor:
         return n_events
 
     def _calc_n_double_occupancy_events(self):
-        event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >=0 ].double_occupancy_event_id
+        event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0].double_occupancy_event_id
         n_events = len(event_ids.unique())
         return n_events
 
@@ -167,18 +172,28 @@ class FeatureExtractor:
         n_events = len(event_ids.unique())
         return n_events
 
-    def _calc_spawning_fraction(self):
+    def _calc_spawning_event_fraction(self):
         n_spawning_frames = len(self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0])
         spawning_fraction = n_spawning_frames / len(self.framefeatures_df)
         return spawning_fraction
 
+    def _calc_double_occupancy_event_fraction(self):
+        n_double_occupancy_frames = len(self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0])
+        double_occupancy_fraction = n_double_occupancy_frames / len(self.framefeatures_df)
+        return double_occupancy_fraction
+
+    def _calc_mouthing_event_fraction(self):
+        n_mouthing_frames = len(self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0])
+        mouthing_fraction = n_mouthing_frames / len(self.framefeatures_df)
+        return mouthing_fraction
+
     def _calc_roi_occupancy_fractions(self):
         value_counts = self.framefeatures_df.nfish_pipe.value_counts(normalize=True)
         value_counts = value_counts.reindex([0, 1, 2, 3], fill_value=0.0)
-        value_counts = value_counts.rename(index={0: 'zero_occupancy_fraction',
-                                                  1: 'single_occupancy_fraction',
-                                                  2: 'double_occupancy_fraction',
-                                                  3: 'triple_occupancy_fraction'})
+        value_counts = value_counts.rename(index={0: 'raw_zero_occupancy_fraction',
+                                                  1: 'raw_single_occupancy_fraction',
+                                                  2: 'raw_double_occupancy_fraction',
+                                                  3: 'raw_triple_occupancy_fraction'})
         return value_counts
 
     def _calc_quivering_fraction(self):
@@ -242,6 +257,34 @@ class FeatureExtractor:
         cap.release()
         plt.close('all')
 
+    def generate_predicted_spawning_summary(self):
+        if self.pose_df is None:
+            return
+        outfile_path = str(self.video_path).replace('.mp4', '_predicted_spawning_summary.csv')
+        event_ids = self.framefeatures_df.spawning_event_id
+        df = []
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_time = str(timedelta(seconds=event_ids[event_ids == eid].index.min()/30))[:7]
+                stop_time = str(timedelta(seconds=event_ids[event_ids == eid].index.max()/30))[:7]
+                df.append({'event_id': eid, 'start': start_time, 'stop': stop_time})
+        df = pd.DataFrame.from_records(df)
+        df.to_csv(outfile_path, index='event_id')
+
+    def generate_predicted_double_occupancy_summary(self):
+        if self.pose_df is None:
+            return
+        outfile_path = str(self.video_path).replace('.mp4', '_predicted_double_occupancy_summary.csv')
+        event_ids = self.framefeatures_df.double_occupancy_event_id
+        df = []
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_time = str(timedelta(seconds=event_ids[event_ids == eid].index.min()/30))[:7]
+                stop_time = str(timedelta(seconds=event_ids[event_ids == eid].index.max()/30))[:7]
+                df.append({'event_id': eid, 'start': start_time, 'stop': stop_time})
+        df = pd.DataFrame.from_records(df)
+        df.to_csv(outfile_path, index='event_id')
+
 
 def concat_clipfeature_csvs(parent_dir):
     parent_dir = Path(parent_dir)
@@ -262,6 +305,8 @@ def process_all(parent_dir, quivering_annotation_path, overwrite=False, visualiz
     for vp in vid_paths:
         print(f'processing {vp.stem}')
         fe = FeatureExtractor(vp, quivering_annotation_path, overwrite=overwrite)
+        fe.generate_predicted_double_occupancy_summary()
+        fe.generate_predicted_spawning_summary()
         if visualize:
             print(f'generating visualization for {vp.stem}')
             fe.visualize_features()
@@ -285,17 +330,17 @@ def delete_outputs(parent_dir, keep_pose_data=True):
 
 # scratch code
 
-# parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
-# quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-# process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
-# concat_clipfeature_csvs(parent_dir)
+parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
+quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
+process_all(parent_dir, quivering_annotation_path, overwrite=True, visualize=False)
+concat_clipfeature_csvs(parent_dir)
 
 #process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=True)
 # vid_path = r'C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\test\1_fish\BHVE_group1_345600-347399.mp4'
-# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
+# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=False)
 # fe.visualize_features()
 
 
-vid_path = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/CTRL_group1/CTRL_group1.mp4'
-quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)
+# vid_path = '/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos/BHVE_group1/BHVE_group1.mp4'
+# quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
+# fe = FeatureExtractor(vid_path, quivering_annotation_path, overwrite=True)

@@ -19,6 +19,21 @@ def plot_mouthing_event_summary(video_paths, plot_dir):
     fig.savefig(str(plot_dir / 'mouthing_counts.pdf'))
     plt.close(fig)
 
+def plot_spawning_event_summary(video_paths, plot_dir):
+    event_counts = {}
+    for vp in video_paths:
+        df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
+        n_events = df.spawning_event_id.max() + 1
+        event_counts.update({vp.stem: n_events})
+    df = pd.DataFrame(event_counts.items(), columns=['trial', 'n_spawning_events'])
+    fig, ax = plt.subplots()
+    sns.barplot(df, x='trial', y='n_spawning_events', ax=ax)
+    ax.set(title='spawning events counts by trial')
+    ax.tick_params(axis='x', labelrotation=90)
+    fig.tight_layout()
+    fig.savefig(str(plot_dir / 'spawning_counts.pdf'))
+    plt.close(fig)
+
 def plot_double_occupancy_event_summary(video_paths, plot_dir):
     event_counts = {}
     for vp in video_paths:
@@ -48,6 +63,23 @@ def plot_double_occupancy_fractions(video_paths, plot_dir):
     fig.tight_layout()
     fig.savefig(str(plot_dir / 'double_occupancy_fractions.pdf'))
     plt.close(fig)
+
+
+def plot_spawning_fractions(video_paths, plot_dir):
+    spawning_fractions = {}
+    for vp in video_paths:
+        df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
+        frac = len(df[df.spawning_event_id >= 0]) / len(df)
+        spawning_fractions.update({vp.stem: frac})
+    df = pd.DataFrame(spawning_fractions.items(), columns=['trial', 'spawning_fraction'])
+    fig, ax = plt.subplots()
+    sns.barplot(df, x='trial', y='spawning_fraction', ax=ax)
+    ax.set(title='fraction of frames that are within spawning events by trial')
+    ax.tick_params(axis='x', labelrotation=90)
+    fig.tight_layout()
+    fig.savefig(str(plot_dir / 'spawning_fractions.pdf'))
+    plt.close(fig)
+
 
 def plot_quivering_event_summary(quivering_annotation_file, plot_dir):
     trial_ids = [f'{prefix}_group{suffix}' for prefix in ['BHVE', 'CTRL'] for suffix in [1, 2, 3, 5, 6, 7, 8, 9]]
@@ -80,7 +112,7 @@ def plot_quivering_event_summary(quivering_annotation_file, plot_dir):
 def plot_all_timeseries(vid_paths, plot_dir):
     data = {}
     names = []
-    features = ['mouthing', 'quivering', 'double_occupancy']
+    features = ['mouthing', 'quivering', 'spawning', 'double_occupancy']
     for vp in vid_paths:
         names.append(vp.stem)
         df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
@@ -88,6 +120,8 @@ def plot_all_timeseries(vid_paths, plot_dir):
         df.rename(columns={'mouthing_event_id':  'mouthing'}, inplace=True)
         df['double_occupancy_event_id'] = df['double_occupancy_event_id'] >= 0
         df.rename(columns={'double_occupancy_event_id':  'double_occupancy'}, inplace=True)
+        df['spawning_event_id'] = df['spawning_event_id'] >= 0
+        df.rename(columns={'spawning_event_id':  'spawning'}, inplace=True)
         data.update({names[-1]: df})
     for name in names:
         fig, axes = plt.subplots(len(features), 1, figsize=(13.3, 7.5), sharex=True)
@@ -121,7 +155,7 @@ def plot_all_timeseries(vid_paths, plot_dir):
 def plot_all_timeseries_kde(vid_paths, plot_dir):
     data = {}
     names = []
-    features = ['mouthing', 'quivering', 'double_occupancy']
+    features = ['mouthing', 'quivering', 'spawning', 'double_occupancy']
     for vp in vid_paths:
         names.append(vp.stem)
         df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
@@ -129,6 +163,8 @@ def plot_all_timeseries_kde(vid_paths, plot_dir):
         df.rename(columns={'mouthing_event_id':  'mouthing'}, inplace=True)
         df['double_occupancy_event_id'] = df['double_occupancy_event_id'] >= 0
         df.rename(columns={'double_occupancy_event_id':  'double_occupancy'}, inplace=True)
+        df['spawning_event_id'] = df['spawning_event_id'] >= 0
+        df.rename(columns={'spawning_event_id':  'spawning'}, inplace=True)
         data.update({names[-1]: df})
     for name in names:
         fig, axes = plt.subplots(len(features), 1, figsize=(13.3, 7.5), sharex=True)
@@ -165,11 +201,14 @@ parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
 vid_paths = list(parent_dir.glob('**/*.mp4'))
 pattern = '((CTRL)|(BHVE))_group\d.mp4'
 vid_paths = sorted([p for p in vid_paths if re.fullmatch(pattern, p.name)])
+vid_paths = [vp for vp in vid_paths if 'BHVE_group8' not in vp.stem]
 plot_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Plots')
-# plot_all_timeseries(vid_paths, plot_dir)
-# plot_mouthing_event_summary(vid_paths, plot_dir)
-# plot_quivering_event_summary(quivering_annotation_path, plot_dir)
-# plot_double_occupancy_event_summary(vid_paths, plot_dir)
-# plot_double_occupancy_fractions(vid_paths, plot_dir)
-# plot_mouthing_event_summary(analysis_dir, plot_dir)
-plot_all_timeseries_kde(vid_paths, plot_dir)
+plot_all_timeseries(vid_paths, plot_dir)
+plot_mouthing_event_summary(vid_paths, plot_dir)
+plot_quivering_event_summary(quivering_annotation_path, plot_dir)
+plot_double_occupancy_event_summary(vid_paths, plot_dir)
+plot_double_occupancy_fractions(vid_paths, plot_dir)
+plot_mouthing_event_summary(vid_paths, plot_dir)
+plot_spawning_fractions(vid_paths, plot_dir)
+plot_spawning_event_summary(vid_paths, plot_dir)
+# plot_all_timeseries_kde(vid_paths, plot_dir)
