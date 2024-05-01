@@ -1,8 +1,10 @@
+import cv2
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 import re
+from tqdm import tqdm
 
 def plot_mouthing_event_summary(video_paths, plot_dir):
     event_counts = {}
@@ -18,6 +20,33 @@ def plot_mouthing_event_summary(video_paths, plot_dir):
     fig.tight_layout()
     fig.savefig(str(plot_dir / 'mouthing_counts.pdf'))
     plt.close(fig)
+
+
+def extract_mouthing_clips(video_paths, output_dir):
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    for vp in video_paths:
+        print(f'extracting clips from {vp.name}')
+        cap = cv2.VideoCapture(str(vp))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        n_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        df = pd.read_csv(str(vp).replace('.mp4', '_framefeatures.csv'), index_col=0)
+        pass
+        for event_id in tqdm(range(int(df.mouthing_event_id.dropna().max() + 1))):
+            df_slice = df[df.mouthing_event_id == event_id]
+            start_frame, stop_frame = df_slice.index.min(), df_slice.index.max()
+            outfile = output_dir / (vp.stem + f'_{event_id:0>3}.mp4')
+            writer = cv2.VideoWriter(str(outfile), fourcc, fps, size)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            while cap.get(cv2.CAP_PROP_POS_FRAMES) <= stop_frame:
+                ret, frame = cap.read()
+                writer.write(frame)
+            writer.release()
+        cap.release()
+
+
+
+
 
 def plot_spawning_event_summary(video_paths, plot_dir):
     event_counts = {}
@@ -203,12 +232,14 @@ pattern = '((CTRL)|(BHVE))_group\d.mp4'
 vid_paths = sorted([p for p in vid_paths if re.fullmatch(pattern, p.name)])
 vid_paths = [vp for vp in vid_paths if 'BHVE_group8' not in vp.stem]
 plot_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Plots')
-plot_all_timeseries(vid_paths, plot_dir)
-plot_mouthing_event_summary(vid_paths, plot_dir)
-plot_quivering_event_summary(quivering_annotation_path, plot_dir)
-plot_double_occupancy_event_summary(vid_paths, plot_dir)
-plot_double_occupancy_fractions(vid_paths, plot_dir)
-plot_mouthing_event_summary(vid_paths, plot_dir)
-plot_spawning_fractions(vid_paths, plot_dir)
-plot_spawning_event_summary(vid_paths, plot_dir)
+clip_output_dir = plot_dir / 'mouthing_clips'
+extract_mouthing_clips(vid_paths, clip_output_dir)
+# plot_all_timeseries(vid_paths, plot_dir)
+# plot_mouthing_event_summary(vid_paths, plot_dir)
+# plot_quivering_event_summary(quivering_annotation_path, plot_dir)
+# plot_double_occupancy_event_summary(vid_paths, plot_dir)
+# plot_double_occupancy_fractions(vid_paths, plot_dir)
+# plot_mouthing_event_summary(vid_paths, plot_dir)
+# plot_spawning_fractions(vid_paths, plot_dir)
+# plot_spawning_event_summary(vid_paths, plot_dir)
 # plot_all_timeseries_kde(vid_paths, plot_dir)
