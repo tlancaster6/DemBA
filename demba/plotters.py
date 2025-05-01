@@ -225,15 +225,15 @@ def plot_all_timeseries_kde(vid_paths, plot_dir):
             plt.close(fig)
 
 
-quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
-parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
-vid_paths = list(parent_dir.glob('**/*.mp4'))
-pattern = '((CTRL)|(BHVE))_group\d.mp4'
-vid_paths = sorted([p for p in vid_paths if re.fullmatch(pattern, p.name)])
-vid_paths = [vp for vp in vid_paths if 'BHVE_group8' not in vp.stem]
-plot_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Plots')
-clip_output_dir = plot_dir / 'mouthing_clips'
-extract_mouthing_clips(vid_paths, clip_output_dir)
+# quivering_annotation_path = '/home/tlancaster/DLC/demasoni_singlenuc/quivering_annotations/Mbuna_behavior_annotations.xlsx'
+# parent_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Videos')
+# vid_paths = list(parent_dir.glob('**/*.mp4'))
+# pattern = '((CTRL)|(BHVE))_group\d.mp4'
+# vid_paths = sorted([p for p in vid_paths if re.fullmatch(pattern, p.name)])
+# vid_paths = [vp for vp in vid_paths if 'BHVE_group8' not in vp.stem]
+# plot_dir = Path('/home/tlancaster/DLC/demasoni_singlenuc/Analysis/Plots')
+# clip_output_dir = plot_dir / 'mouthing_clips'
+# extract_mouthing_clips(vid_paths, clip_output_dir)
 # plot_all_timeseries(vid_paths, plot_dir)
 # plot_mouthing_event_summary(vid_paths, plot_dir)
 # plot_quivering_event_summary(quivering_annotation_path, plot_dir)
