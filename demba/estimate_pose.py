@@ -6,14 +6,16 @@ idx = pd.IndexSlice
 
 def estimate_pose(config_path, video_path, n_fish=None, visualize=False):
     video_path = str(video_path)
+    print('running pose estimation')
     dlc.analyze_videos(config_path, [video_path], auto_track=False, robust_nframes=True)
+    print('generating tracklets')
     dlc.convert_detections2tracklets(config_path, [video_path], track_method='ellipse')
     if n_fish is None:
         n_fish = 3
         while n_fish > 0:
             try:
                 print(f'attempting stitching with n_tracks={n_fish}')
-                dlc.stitch_tracklets(config_path, [video_path], n_tracks=n_fish)
+                dlc.stitch_tracklets(config_path, [video_path], n_tracks=n_fish, split_tracklets=False)
                 break
             except ValueError as e:
                 print(f'failed to stitch tracklets with n_fish={n_fish}')
@@ -23,7 +25,7 @@ def estimate_pose(config_path, video_path, n_fish=None, visualize=False):
             print('stitching failed')
             return
     else:
-        dlc.stitch_tracklets(config_path, [video_path], n_tracks=n_fish)
+        dlc.stitch_tracklets(config_path, [video_path], n_tracks=n_fish, split_tracklets=False)
     dlc.filterpredictions(config_path, video_path)
     print(f'analyzed {Path(video_path).name} successfully')
     if visualize:

@@ -20,5 +20,5 @@ def run_analysis(analysis_targets, dlc_config, quivering_annotations, run_pose_e
 dlc_config_path = Path('/home/tlancaster/DLC/demasoni_singlenuc/config.yaml')
 analysis_dir_path = dlc_config_path.parent / 'Analysis'
 quivering_annotation_path = analysis_dir_path / 'Annotations' / 'Mbuna_behavior_annotations.xlsx'
-analysis_target_list = ['BHVE_group1_097200-098999']
-run_analysis(analysis_target_list, dlc_config_path, quivering_annotation_path, True, True)
+analysis_target_list = ['BHVE_group1']
+run_analysis(analysis_target_list, dlc_config_path, quivering_annotation_path, False, True)

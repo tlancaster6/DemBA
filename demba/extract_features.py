@@ -44,8 +44,8 @@ class FeatureExtractor:
         return None, None, None
 
     def _load_feature_csvs(self):
-        self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0)
-        self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0)
+        self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0, low_memory=False)
+        self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0, low_memory=False)
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
