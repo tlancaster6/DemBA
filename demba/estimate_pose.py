@@ -87,11 +87,11 @@ def delete_outputs(dir, keep_pose_data=True):
 # config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
 
 # config = '/home/tlancaster/DLC/demasoni_singlenuc/config.yaml'
-vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\2_fish\CTRL_group9_315000-316799.mp4"
-config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
-analyze_video(config, vid, n_fish=2)
-dlc.create_labeled_video(config, [vid], filtered=True, color_by='individual',
-                         displayedindividuals=['ind1', 'ind2'], overwrite=True)
+# vid = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\BAMS_set1\2_fish\CTRL_group9_315000-316799.mp4"
+# config = r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\config.yaml"
+# analyze_video(config, vid, n_fish=2)
+# dlc.create_labeled_video(config, [vid], filtered=True, color_by='individual',
+#                          displayedindividuals=['ind1', 'ind2'], overwrite=True)
 
 # analysis_dir = Path(r"C:\Users\tucke\DLC_Projects\demasoni_singlenuc\")
 # for video_dir in analysis_dir.glob('*'):
@@ -118,3 +118,5 @@ dlc.create_labeled_video(config, [vid], filtered=True, color_by='individual',
 #         dlc.create_labeled_video(config, [str(vp)], filtered=True, color_by='individual',
 #                                  displayedindividuals=[f'ind{i}' for i in range(1, n_fish+1)], overwrite=True)
 
+config = '/home/tlancaster/DLC/demasoni_singlenuc/config.yaml'
+dlc.evaluate_network(config, plotting=True)
