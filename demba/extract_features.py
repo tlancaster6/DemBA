@@ -1,197 +1,330 @@
-from demba.utils.dlc_utils import h5_to_df
-from demba.utils.roi_utils import estimate_roi
-from demba.utils import gen_utils
+import os.path
 from pathlib import Path
 import pandas as pd
 import cv2
+from demba.utils import estimate_roi
+import re
+from itertools import permutations, combinations
 import numpy as np
-from itertools import combinations
-import warnings
-import deeplabcut as dlc
-from math import atan2, degrees
-from scipy.stats import circmean, circstd
+import matplotlib.pyplot as plt
+from dbscan1d.core import DBSCAN1D
+from datetime import timedelta
+idx = pd.IndexSlice
+from matplotlib.animation import FuncAnimation
 
-framerate = 30  #fps
 
 class FeatureExtractor:
 
-    def __init__(self, config_path, video_path):
-        self.config_path, self.video_path = config_path, video_path
-        self.config_dict = dlc.utils.auxiliaryfunctions.read_config(config_path)
-        self.h5_path = str(next(Path(self.video_path).parent.glob(Path(self.video_path).stem + '*_filtered.h5')))
-        self._load_pose_estimation()
-        self._estimate_roi()
-        self.feature_df = None
+    def __init__(self, video_path, quivering_annotation_path, overwrite=False):
+        self.video_path = str(video_path)
+        self.quivering_annotation_path = str(quivering_annotation_path)
+        self.file_stem = Path(video_path).stem
+        self.framefeatures_path = str(video_path).replace('.mp4', '_framefeatures.csv')
+        self.clipfeatures_path = str(video_path).replace('.mp4', '_clipfeatures.csv')
+        try:
+            self.h5_path = str(next(Path(self.video_path).parent.glob(Path(self.video_path).stem + '*_filtered.h5')))
+        except StopIteration:
+            self.h5_path = None
+        self.pose_df, self.individuals, self.bodyparts = self._load_pose_data()
+        self.roi_x, self.roi_y, self.roi_r, self.frame_height, self.frame_width = self._estimate_roi()
+        if overwrite or not (os.path.exists(self.framefeatures_path) and os.path.exists(self.clipfeatures_path)):
+            self.extract_all_features()
+        self._load_feature_csvs()
 
-    def extract_all_features(self):
-        component_dfs = []
-        component_dfs.append(self._calc_all_distances())
-        component_dfs.append(self._calc_nfish_in_frame())
-        component_dfs.append(self._calc_skeleton_angles())
-        bp_velocities_df = self._estimate_bp_velocities()
-        centroids_df = self._estimate_centroids()
-        component_dfs.extend([centroids_df, bp_velocities_df])
-        component_dfs.append(self._calc_roi_relationships(centroids_df))
-        component_dfs.append(self._calc_intercentroid_angles(centroids_df))
-        component_dfs.append(self._calc_rolling_window_features(bp_velocities_df=bp_velocities_df))
-        self.feature_df = pd.concat(component_dfs, axis=1)
+    def _load_pose_data(self):
+        if self.h5_path is not None:
+            pose_df = pd.read_hdf(self.h5_path)
+            scorer = pose_df.columns.get_level_values(0)[0]
+            pose_df = pose_df.loc[:, scorer]
+            pose_df = pose_df.loc[:, idx[:, :, ('x', 'y')]]
+            pose_df.columns = pose_df.columns.remove_unused_levels()
+            pose_df = pose_df.sort_index(axis=1)
+            individuals, bodyparts = [list(pose_df.columns.levels[i]) for i in [0, 1]]
+            return pose_df, individuals, bodyparts
+        return None, None, None
 
-    def save_feature_matrix(self):
-        self.feature_df.to_csv(self.video_path.replace('.mp4', '_features.csv'))
-
-    def _load_pose_estimation(self):
-        bp_map = gen_utils.bodypart2abbreviation_mapping
-        id_map = gen_utils.fullid2shortid_mapping
-        val_map = {'x': 'x', 'y': 'y', 'likelihood': 'c'}
-        self.raw_pose_df = h5_to_df(self.h5_path)
-        flat_ax = self.raw_pose_df.columns.map(lambda x: bp_map[x[1]] + id_map[x[0]] + val_map[x[2]])
-        self.pose_df = self.raw_pose_df.set_axis(flat_ax, axis=1)
-        self.pose_df_cols = list(self.pose_df.columns)
-        self.fish_ids = list(gen_utils.fullid2shortid_mapping.values())
+    def _load_feature_csvs(self):
+        self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0)
+        self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0)
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) // 2)
         ret, frame = cap.read()
         if not ret:
             print(f'could not extract a reference frame from {Path(self.video_path).name}')
             return
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        roi_vis_path = str(Path(self.video_path).parent / (Path(self.video_path).stem + '_roi.png'))
-        self.roi_x, self.roi_y, self.roi_r = estimate_roi(frame, output_path=roi_vis_path)
+        roi_vis_path = str(self.video_path).replace('.mp4', '_roi.png')
+        roi_x, roi_y, roi_r = estimate_roi(frame, output_path=roi_vis_path)
+        frame_height, frame_width = frame.shape[:-1]
         cap.release()
+        return roi_x, roi_y, roi_r, frame_height, frame_width
 
-    def _calc_all_distances(self):
-        unique_points = list(pd.unique([x[:-1] for x in self.pose_df.columns]))
-        unique_combos = combinations(unique_points, 2)
-        dists_df = []
-        pose_df = self.pose_df
-        for p1, p2 in unique_combos:
-            dists = pose_df.apply(lambda row: np.linalg.norm([row[p1+'x'] - row[p2+'x'], row[p1+'y'] - row[p2+'y']]), axis=1)
-            dists.name = f'dist_{p1}{p2}'
-            dists_df.append(dists)
-        return pd.DataFrame(dists_df).T
+    def extract_all_features(self):
+        # extract frame-level features
+        framefeatures_df = []
+        if self.pose_df is not None:
+            framefeatures_df.append(self._calc_nfish_frame())
+            framefeatures_df.append(self._calc_nfish_pipe())
+            framefeatures_df.append(self._detect_mouthing_events())
+            framefeatures_df.append(self._detect_double_occupancy_events())
+            framefeatures_df.append(self._detect_spawning_events())
+        framefeatures_df.append(self._map_quivering_annotations())
+        framefeatures_df = pd.concat(framefeatures_df, axis=1)
+        self.framefeatures_df = framefeatures_df
+        self.framefeatures_df.to_csv(self.framefeatures_path)
 
-    # def _calc_all_angles(self):
-    #     unique_points = list(pd.unique([x[:-1] for x in self.pose_df.columns]))
-    #     unique_combos = combinations(unique_points, 2)
-    #     angles_df = []
-    #     pose_df = self.pose_df
-    #     for p1, p2 in unique_combos:
-    #         angles = pose_df.apply(lambda row: degrees(atan2(row[p1+'y'] - row[p2+'y'], row[p1+'x'] - row[p2+'x'])), axis=1)
-    #         angles.name = f'angle_{p1}{p2}'
-    #         angles_df.append(angles)
-    #     return pd.DataFrame(angles_df).T
+        # extract clip-level features
+        clipfeatures_series = pd.Series(dtype=float)
+        clipfeatures_series['quivering_fraction'] = self._calc_quivering_fraction()
+        if self.pose_df is not None:
+            clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
+            clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
+            clipfeatures_series['n_spawning_events'] = self._calc_n_spawning_events()
+            clipfeatures_series['mouthing_event_fraction'] = self._calc_mouthing_event_fraction()
+            clipfeatures_series['double_occupancy_event_fraction'] = self._calc_double_occupancy_event_fraction()
+            clipfeatures_series['spawning_event_fraction'] = self._calc_spawning_event_fraction()
+            clipfeatures_series['nfish_frame_max'] = framefeatures_df.nfish_frame.max()
+            clipfeatures_series['nfish_pipe_max'] = framefeatures_df.nfish_pipe.max()
+            clipfeatures_series['roi_x'], clipfeatures_series['roi_y'], clipfeatures_series['roi_r'] = self.roi_x, self.roi_y, self.roi_r
+            clipfeatures_series = pd.concat([clipfeatures_series, self._calc_roi_occupancy_fractions()])
+        self.clipfeatures_df = pd.DataFrame(clipfeatures_series, columns=[self.file_stem]).T
+        self.clipfeatures_df.to_csv(self.clipfeatures_path)
 
-    def _calc_skeleton_angles(self):
-        angles_df = []
-        bp_map = gen_utils.bodypart2abbreviation_mapping
-        skeleton_pairs = [[bp_map[x[0]], bp_map[x[1]]] for x in self.config_dict['skeleton']]
-        for fid in self.fish_ids:
-            for p in skeleton_pairs:
-                p1, p2 = f'{p[0]}{fid}', f'{p[1]}{fid}'
-                angles = self.pose_df.apply(lambda row: degrees(atan2(row[p1+'y']-row[p2+'y'], row[p1+'x']-row[p2+'x'])), axis=1)
-                angles[angles < 0] += 360
-                angles.name = f'angle_{p1}{p2}'
-                angles_df.append(angles)
-        return pd.DataFrame(angles_df).T
+    def _detect_mouthing_events(self, dist_thresh=25, eps=15, min_samples=15):
+        candidate_dists = []
+        for id1, id2 in list(permutations(self.individuals, 2)):
+            dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
+            candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
+        if not candidate_dists:
+            return pd.Series(data=-1, index=self.pose_df.index, name='mouthing_event_id')
+        dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
+        subthresh_frames = dists.loc[dists < dist_thresh].index.values
+        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
+        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
+        event_ids.name = 'mouthing_event_id'
+        return event_ids
 
-    def _estimate_centroids(self):
-        centroids_df = []
-        for fid in self.fish_ids:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                x_centroids = self.pose_df[[c for c in self.pose_df_cols if c.endswith(fid+'x')]].apply(np.nanmean, axis=1)
-                y_centroids = self.pose_df[[c for c in self.pose_df_cols if c.endswith(fid+'y')]].apply(np.nanmean, axis=1)
-            x_centroids.name = f'centx_{fid}'
-            y_centroids.name = f'centy_{fid}'
-            centroids_df.extend([x_centroids, y_centroids])
-        return pd.DataFrame(centroids_df).T
+    def _detect_double_occupancy_events(self, eps=30, min_samples=30):
+        nfish_pipe = self._calc_nfish_pipe()
+        double_occupancy_frames = nfish_pipe[nfish_pipe == 2].index.values
+        labels = DBSCAN1D(eps, min_samples).fit_predict(double_occupancy_frames)
+        event_ids = pd.Series(data=labels, index=double_occupancy_frames).reindex(nfish_pipe.index, fill_value=-1)
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
+        event_ids.name = 'double_occupancy_event_id'
+        return event_ids
 
-    def _calc_intercentroid_angles(self, centroids_df=None):
-        if centroids_df is None:
-            centroids_df = self._estimate_centroids()
-        fish_id_combos = list(combinations(self.fish_ids, 2))
-        angles_df = []
-        for fid1, fid2 in fish_id_combos:
-            angles = centroids_df.apply(
-                lambda row: degrees(atan2(row[f'centy_{fid1}'] - row[f'centy_{fid2}'],
-                                          row[f'centx_{fid1}'] - row[f'centx_{fid2}'])), axis=1)
-            angles[angles < 0] += 360
-            angles_df.append(angles)
-        return pd.DataFrame(angles_df).T
+    def _detect_spawning_events(self, dist_thresh=25, eps=150, min_samples=30):
+        candidate_dists = []
+        for id1, id2 in list(permutations(self.individuals, 2)):
+            dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
+            candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
+        if not candidate_dists:
+            return pd.Series(data=-1, index=self.pose_df.index, name='spawning_event_id')
+        dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
+        subthresh_frames = dists.loc[dists < dist_thresh].index.values
+        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
+        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
+        event_ids.name = 'spawning_event_id'
+        return event_ids
 
-    def _calc_nfish_in_frame(self):
-        nfish_df = pd.DataFrame(0, index=self.pose_df.index, columns=['nfishframe'])
-        for fid in self.fish_ids:
-            sub_df = self.pose_df[[c for c in self.pose_df_cols if c.endswith(fid+'x')]]
-            nfish_df['nfishframe'] += sub_df.apply(lambda row: int(row.notnull().any()), axis=1)
-        return nfish_df
+    def _calc_nfish_frame(self):
+        nfish_frame = self.pose_df.groupby('individuals', axis=1).any().sum(axis=1)
+        nfish_frame.name = 'nfish_frame'
+        return nfish_frame
 
-    def _calc_roi_relationships(self, centroids_df=None):
-        if centroids_df is None:
-            centroids_df = self._estimate_centroids()
-        roi_df = []
-        nfish_roi = pd.Series(0, index=self.pose_df.index, name='nfishroi')
-        roi_x, roi_y, roi_r = self.roi_x, self.roi_y, self.roi_r
-        for fid in self.fish_ids:
-            sub_df = centroids_df[[f'centx_{fid}', f'centy_{fid}']]
-            disttoroicenter = sub_df.apply(lambda row: np.linalg.norm([row[0]-roi_x, row[1]-roi_y]), axis=1)
-            disttoroicenter.name = f'disttoroicenter_{fid}'
-            angletoroicenter = sub_df.apply(lambda row: degrees(atan2(row[1]-roi_y, row[0]-roi_x)), axis=1)
-            angletoroicenter[angletoroicenter < 0] += 360
-            angletoroicenter.name = f'angletoroicenter_{fid}'
-            roi_df.extend([disttoroicenter, angletoroicenter])
-            nfish_roi += (disttoroicenter <= roi_r).astype(int)
-        roi_df.append(nfish_roi)
-        return pd.DataFrame(roi_df).T
+    def _calc_nfish_pipe(self):
+        tmp_df = self.pose_df.loc[:, idx[:, 'stripe1', :]].copy()
+        tmp_df.loc[:, idx[:, :, 'x']] -= self.roi_x
+        tmp_df.loc[:, idx[:, :, 'y']] -= self.roi_y
+        tmp_df = (tmp_df ** 2).groupby('individuals', axis=1).sum(min_count=2) ** 0.5
+        nfish_pipe = (tmp_df <= self.roi_r).sum(axis=1)
+        nfish_pipe.name = 'nfish_pipe'
+        return nfish_pipe
 
-    def _estimate_bp_velocities(self):
-        sub_df = self.pose_df[[c for c in self.pose_df_cols if not c.endswith('c')]]
-        movement_df = []
-        unique_points = list(pd.unique([x[:-1] for x in self.pose_df.columns]))
-        component_velocities = sub_df.rolling(window=2).apply(np.diff)
-        for p in unique_points:
-            speeds = component_velocities.apply(lambda row: np.linalg.norm([row[p+'x'], row[p+'y']]), axis=1)
-            speeds.name = f'speed_{p}'
-            headings = component_velocities.apply(lambda row: degrees(atan2(row[p+'x'], row[p+'y'])), axis=1)
-            headings.name = f'heading_{p}'
-            headings[headings < 0] += 360
-            movement_df.extend([speeds, headings])
-        return pd.DataFrame(movement_df).T
+    def _calc_n_mouthing_events(self):
+        event_ids = self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0].mouthing_event_id
+        n_events = len(event_ids.unique())
+        return n_events
 
-    def _calc_rolling_window_features(self, bp_velocities_df=None, window=31):
-        if bp_velocities_df is None:
-            bp_velocities_df = self._estimate_bp_velocities()
+    def _calc_n_double_occupancy_events(self):
+        event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0].double_occupancy_event_id
+        n_events = len(event_ids.unique())
+        return n_events
 
-        sub_df = bp_velocities_df[[c for c in bp_velocities_df.columns if c.startswith('speed')]]
-        roll = sub_df.rolling(window=window, center=True)
-        rolling_avg_speeds = roll.apply(np.nanmean)
-        rolling_avg_speeds.columns = ['rollavg' + c for c in rolling_avg_speeds.columns]
-        rolling_std_speeds = roll.apply(np.nanstd)
-        rolling_std_speeds.columns = ['rollstd' + c for c in rolling_std_speeds.columns]
+    def _calc_n_spawning_events(self):
+        event_ids = self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0].spawning_event_id
+        n_events = len(event_ids.unique())
+        return n_events
 
-        sub_df = bp_velocities_df[[c for c in bp_velocities_df.columns if c.startswith('heading')]]
-        roll = sub_df.rolling(window=window, center=True)
-        rolling_avg_headings = roll.apply(lambda row: circmean(row, high=360, nan_policy='omit'))
-        rolling_avg_headings.columns = ['rollavg' + c for c in rolling_avg_headings.columns]
-        rolling_std_headings = roll.apply(lambda row: circstd(row, high=360, nan_policy='omit'))
-        rolling_std_headings.columns = ['rollstd' + c for c in rolling_std_headings.columns]
+    def _calc_spawning_event_fraction(self):
+        n_spawning_frames = len(self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0])
+        spawning_fraction = n_spawning_frames / len(self.framefeatures_df)
+        return spawning_fraction
 
-        return pd.concat([rolling_avg_speeds, rolling_std_speeds, rolling_avg_headings, rolling_std_headings], axis=1)
+    def _calc_double_occupancy_event_fraction(self):
+        n_double_occupancy_frames = len(self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0])
+        double_occupancy_fraction = n_double_occupancy_frames / len(self.framefeatures_df)
+        return double_occupancy_fraction
+
+    def _calc_mouthing_event_fraction(self):
+        n_mouthing_frames = len(self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0])
+        mouthing_fraction = n_mouthing_frames / len(self.framefeatures_df)
+        return mouthing_fraction
+
+    def _calc_roi_occupancy_fractions(self):
+        value_counts = self.framefeatures_df.nfish_pipe.value_counts(normalize=True)
+        value_counts = value_counts.reindex([0, 1, 2, 3], fill_value=0.0)
+        value_counts = value_counts.rename(index={0: 'raw_zero_occupancy_fraction',
+                                                  1: 'raw_single_occupancy_fraction',
+                                                  2: 'raw_double_occupancy_fraction',
+                                                  3: 'raw_triple_occupancy_fraction'})
+        return value_counts
+
+    def _calc_quivering_fraction(self):
+        quivering_fraction = self.framefeatures_df.quivering.sum() / len(self.framefeatures_df)
+        return quivering_fraction
+
+    def _map_quivering_annotations(self):
+        ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem, skiprows=1)
+        ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end']]
+        ref_df = (ref_df * 30).apply(np.round)
+        quivering = pd.Series(False, index=pd.RangeIndex(0, 378000), name='quivering')
+        for event in ref_df.iterrows():
+            event = event[1]
+            start_in_range = 0 < event.temporal_segment_start < quivering.index.max()
+            end_in_range = 0 < event.temporal_segment_end < quivering.index.max()
+            if start_in_range and end_in_range:
+                quivering.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
+            elif start_in_range:
+                quivering.iloc[int(event.temporal_segment_start): quivering.index.max()] = True
+            elif end_in_range:
+                quivering.iloc[0: int(event.temporal_segment_end)] = True
+        return quivering
+
+    def visualize_features(self, overwrite=True):
+        def grab_frame(vid_cap, frame_number):
+            vid_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame = vid_cap.read()
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        def grab_framefeatures_as_strings(frame):
+            feats = [f'frame = {frame}']
+            feats.extend([f'{feat} = {val}' for feat, val in list(self.framefeatures_df.loc[frame].items())])
+            return feats
+
+        out_path = str(self.video_path).replace('.mp4', '_featurevis.mp4')
+        if not overwrite and os.path.exists(out_path):
+            return
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        axes[1].axis('off')
+        cap = cv2.VideoCapture(self.video_path)
+        im = axes[0].imshow(grab_frame(cap, 0))
+        feat_strings = grab_framefeatures_as_strings(0)
+        y_positions = np.linspace(0.1, 0.9, len(feat_strings))
+        txt_array = [axes[1].text(0.1, y_positions[i], feat_strings[i]) for i in range(len(feat_strings))]
+
+        def animate(i):
+            im.set_data(grab_frame(cap, i))
+            feat_strings = grab_framefeatures_as_strings(i)
+            [txt.set_text(feat) for txt, feat in list(zip(txt_array, feat_strings))]
+            return *txt_array, im
+
+        n_frames = len(self.framefeatures_df)
+        anim = FuncAnimation(
+            fig,
+            animate,
+            frames=n_frames,
+            interval=1000 / 30,
+            )
+
+        anim.save(out_path, writer='ffmpeg', fps=30)
+        cap.release()
+        plt.close('all')
+
+    def generate_predicted_spawning_summary(self):
+        if self.pose_df is None:
+            return
+        outfile_path = str(self.video_path).replace('.mp4', '_predicted_spawning_summary.csv')
+        event_ids = self.framefeatures_df.spawning_event_id
+        df = []
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_time = str(timedelta(seconds=event_ids[event_ids == eid].index.min()/30))[:7]
+                stop_time = str(timedelta(seconds=event_ids[event_ids == eid].index.max()/30))[:7]
+                df.append({'event_id': eid, 'start': start_time, 'stop': stop_time})
+        df = pd.DataFrame.from_records(df)
+        df.to_csv(outfile_path, index='event_id')
+
+    def generate_predicted_double_occupancy_summary(self):
+        if self.pose_df is None:
+            return
+        outfile_path = str(self.video_path).replace('.mp4', '_predicted_double_occupancy_summary.csv')
+        event_ids = self.framefeatures_df.double_occupancy_event_id
+        df = []
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_time = str(timedelta(seconds=event_ids[event_ids == eid].index.min()/30))[:7]
+                stop_time = str(timedelta(seconds=event_ids[event_ids == eid].index.max()/30))[:7]
+                df.append({'event_id': eid, 'start': start_time, 'stop': stop_time})
+        df = pd.DataFrame.from_records(df)
+        df.to_csv(outfile_path, index='event_id')
 
 
+def concat_clipfeature_csvs(parent_dir):
+    parent_dir = Path(parent_dir)
+    clipfeature_csv_paths = list(parent_dir.glob('**/*_clipfeatures.csv'))
+    rows = []
+    for csv_path in clipfeature_csv_paths:
+        rows.append(pd.read_csv(str(csv_path), index_col=0))
+    df = pd.concat(rows, axis=0)
+    df.to_csv(str(parent_dir / 'collated_clipfeatures.csv'))
+    pd.concat(rows, axis=0)
 
 
+def process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=False):
+    parent_dir = Path(parent_dir)
+    vid_paths = list(parent_dir.glob('**/*.mp4'))
+    pattern = '((CTRL)|(BHVE))_group\d.mp4'
+    vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+    for vp in vid_paths:
+        print(f'processing {vp.stem}')
+        fe = FeatureExtractor(vp, quivering_annotation_path, overwrite=overwrite)
+        fe.generate_predicted_double_occupancy_summary()
+        fe.generate_predicted_spawning_summary()
+        if visualize:
+            print(f'generating visualization for {vp.stem}')
+            fe.visualize_features()
 
 
-
-
-
-
-
-
-
-
-
+def delete_outputs(parent_dir, keep_pose_data=True):
+    parent_dir = Path(parent_dir)
+    vid_paths = list(parent_dir.glob('**/*.mp4'))
+    pattern = r'((CTRL)|(BHVE))_group\d.mp4'
+    vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+    targets = ['*_assemblies.pickle', '*_el.h5', '*_el.pickle', '*_filtered.csv', '*_filtered.h5', '*_labeled.mp4',
+               '*_framefeatures.csv', '*_clipfeatures.csv', '*_featurevis.mp4', '*_roi.png']
+    if not keep_pose_data:
+        targets.extend(['*_full.pickle', '*_meta.pickle', '*_full.mp4'])
+    for vp in vid_paths:
+        vid_parent = vp.parent
+        for target in targets:
+            if list(vid_parent.glob(target)):
+                list(vid_parent.glob(target))[0].unlink()
 
 

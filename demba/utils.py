@@ -5,8 +5,6 @@ from skimage.morphology import remove_small_holes, remove_small_objects
 import numpy as np
 from skimage.feature import canny
 from skimage.transform import hough_circle, hough_circle_peaks
-import cv2
-
 
 def generate_roi_visualization(img, cx, cy, r, output_path):
     """draws a red circle centered at (cx, cy) with radius (r) over the image"""
@@ -36,5 +34,3 @@ def estimate_roi(img, rmin=125, rmax=250, hmin=0.4, hmax=0.5, output_path=None):
     if output_path:
         generate_roi_visualization(img_rgb, cx, cy, r, output_path)
     return cx, cy, r
-
-
