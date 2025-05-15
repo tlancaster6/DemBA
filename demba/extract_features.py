@@ -70,14 +70,19 @@ class FeatureExtractor:
             framefeatures_df.append(self._detect_mouthing_events())
             framefeatures_df.append(self._detect_double_occupancy_events())
             framefeatures_df.append(self._detect_spawning_events())
-        framefeatures_df.append(self._map_quivering_annotations())
+        male_lead_quiver, male_circle_quiver, female_circle_quiver = self._map_quivering_annotations()
+        framefeatures_df.append(male_lead_quiver)
+        framefeatures_df.append(male_circle_quiver)
+        framefeatures_df.append(female_circle_quiver)
         framefeatures_df = pd.concat(framefeatures_df, axis=1)
         self.framefeatures_df = framefeatures_df
         self.framefeatures_df.to_csv(self.framefeatures_path)
 
         # extract clip-level features
         clipfeatures_series = pd.Series(dtype=float)
-        clipfeatures_series['quivering_fraction'] = self._calc_quivering_fraction()
+        clipfeatures_series['male_lead_quivering_fraction'] = self._calc_quivering_fraction("male_lead_quiver")
+        clipfeatures_series['male_circle_quivering_fraction'] = self._calc_quivering_fraction("male_circle_quiver")
+        clipfeatures_series['female_circle_quivering_fraction'] = self._calc_quivering_fraction("female_circle_quiver")
         if self.pose_df is not None:
             clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
             clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
@@ -196,26 +201,53 @@ class FeatureExtractor:
                                                   3: 'raw_triple_occupancy_fraction'})
         return value_counts
 
-    def _calc_quivering_fraction(self):
-        quivering_fraction = self.framefeatures_df.quivering.sum() / len(self.framefeatures_df)
+    def _calc_quivering_fraction(self, quivering):
+        quivering_fraction = self.framefeatures_df[quivering].sum() / len(self.framefeatures_df[quivering])
         return quivering_fraction
-
+        
+    def _clean_metadata_string(self, meta_str):
+        meta_dict = eval(meta_str)
+        return meta_dict["TEMPORAL-SEGMENTS"]
+        
     def _map_quivering_annotations(self):
         ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem, skiprows=1)
-        ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end']]
-        ref_df = (ref_df * 30).apply(np.round)
-        quivering = pd.Series(False, index=pd.RangeIndex(0, 378000), name='quivering')
-        for event in ref_df.iterrows():
+        ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end', 'metadata']]
+        ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * 30).apply(np.round)
+        ref_df["temporal_segment_end"] = (ref_df["temporal_segment_end"]  * 30).apply(np.round)
+        ref_df["metadata"] = (ref_df["metadata"]).apply(self._clean_metadata_string)
+        male_lead_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='male_lead_quiver')
+        male_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='male_circle_quiver')
+        female_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='female_circle_quiver')
+        MIN_FRAME = 0
+        MAX_FRAME = 378000 - 1 # 3 hr 30 min video at 30 FPS is 378000 Frames in total and minus to maintain similarity to index.max()
+        for event in ref_df.iterrows(): # for every event of quivering how should we update the series 
             event = event[1]
-            start_in_range = 0 < event.temporal_segment_start < quivering.index.max()
-            end_in_range = 0 < event.temporal_segment_end < quivering.index.max()
+            metadata = event.metadata
+            start_in_range = 0 < event.temporal_segment_start < MAX_FRAME
+            end_in_range = 0 < event.temporal_segment_end < MAX_FRAME
+            # NOTE ILOC has been deprecated but still works. If it does break in the future move to arr[start:end] 
             if start_in_range and end_in_range:
-                quivering.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
+                if metadata == "male-lead-quiver":
+                    male_lead_quiver.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
+                elif metadata == "male-circle-quiver":
+                    male_circle_quiver.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
+                elif metadata == "female-circle-quiver":
+                    female_circle_quiver.iloc[int(event.temporal_segment_start): int(event.temporal_segment_end)] = True
             elif start_in_range:
-                quivering.iloc[int(event.temporal_segment_start): quivering.index.max()] = True
+                if metadata == "male-lead-quiver":
+                    male_lead_quiver.iloc[int(event.temporal_segment_start): MAX_FRAME] = True
+                elif metadata == "male-circle-quiver":
+                    male_circle_quiver.iloc[int(event.temporal_segment_start): MAX_FRAME] = True
+                elif metadata == "female-circle-quiver":
+                    female_circle_quiver.iloc[int(event.temporal_segment_start): MAX_FRAME] = True
             elif end_in_range:
-                quivering.iloc[0: int(event.temporal_segment_end)] = True
-        return quivering
+                if metadata == "male-lead-quiver":
+                    male_lead_quiver.iloc[0: int(event.temporal_segment_end)] = True
+                elif metadata == "male-circle-quiver":
+                    male_circle_quiver.iloc[0: int(event.temporal_segment_end)] = True
+                elif metadata == "female-circle-quiver":
+                    female_circle_quiver.iloc[0: int(event.temporal_segment_end)] = True
+        return male_lead_quiver, male_circle_quiver, female_circle_quiver
 
     def visualize_features(self, overwrite=True):
         def grab_frame(vid_cap, frame_number):
