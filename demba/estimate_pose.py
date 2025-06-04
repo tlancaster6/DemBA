@@ -4,10 +4,14 @@ import pandas as pd
 
 idx = pd.IndexSlice
 
-def estimate_pose(config_path, video_path, n_fish=None, visualize=False):
+def estimate_pose(config_path, video_path, n_fish=None, skip_tracking=False, visualize=False):
     video_path = str(video_path)
     print('running pose estimation')
     dlc.analyze_videos(config_path, [video_path], auto_track=False, robust_nframes=True)
+    if skip_tracking:
+        if visualize:
+            dlc.create_video_with_all_detections(config_path, [video_path])
+        return
     print('generating tracklets')
     dlc.convert_detections2tracklets(config_path, [video_path], track_method='ellipse')
     if n_fish is None:
