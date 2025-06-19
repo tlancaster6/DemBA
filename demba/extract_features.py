@@ -2,7 +2,7 @@ import os.path
 from pathlib import Path
 import pandas as pd
 import cv2
-from demba.utils import estimate_roi
+from demba.utils import estimate_roi, generate_roi_visualization
 import re
 from itertools import permutations, combinations
 import numpy as np
@@ -56,8 +56,11 @@ class FeatureExtractor:
             return
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         roi_vis_path = str(self.video_path).replace('.mp4', '_roi.png')
-        roi_x, roi_y, roi_r = estimate_roi(frame, output_path=roi_vis_path)
         frame_height, frame_width = frame.shape[:-1]
+        roi_x = frame_width/2
+        roi_y = frame_height/2
+        roi_r = frame_height/2
+        generate_roi_visualization(frame,roi_x,roi_y,roi_r, roi_vis_path)
         cap.release()
         return roi_x, roi_y, roi_r, frame_height, frame_width
 
