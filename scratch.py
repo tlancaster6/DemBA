@@ -1,5 +1,5 @@
-# rclone command for copying clipfeature csvs to local disk:
-# rclone copy "cichlidVideo:/Tucker Lancaster/mbuna_singlenuc_project/demasoni_singlenuc/Analysis_06_19_2025/Deeplab-cut/demasoni_singlenuc-Victor-2025-06-06/Analysis/Videos" "/home/tlancaster/DLC/demasoni_singlenuc-Victor-2025-06-06/Analysis/Videos" --include "*_clipfeatures.csv"
+from demba.estimate_pose import estimate_pose
 
-# code for running plotting and csv concatentation
-
+config = '/home/tlancaster/DLC/demasoni_singlenuc-Victor-2025-06-06/config.yaml'
+video_path = '/home/tlancaster/DLC/demasoni_singlenuc-Victor-2025-06-06/testing/iteration1/shuffle2/BHVE_group9_316800-318599.mp4'
+estimate_pose(config_path=config, video_path=video_path, shuffle=2, n_fish=2)
