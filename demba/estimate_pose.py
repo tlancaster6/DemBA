@@ -52,7 +52,7 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             videotype="mp4",
             n_tracks=n_fish,
             track_method=track_method,
-            n_triplets=1000,
+            n_triplets=5000,
             train_epochs=100
         )
         track_method='transformer'
@@ -88,6 +88,7 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             codec="mp4v",  # Video codec for output video
             draw_skeleton=True,  # Draw skeleton connections between body parts
             color_by="individual",  # Color scheme: 'bodypart' or 'individual'
+            track_method=track_method
         )
 
     # Source: DeepLabCut/post_processing/filtering.py
@@ -116,5 +117,6 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             codec="mp4v",  # Video codec for output video
             draw_skeleton=True,  # Draw skeleton connections between body parts
             color_by="individual",  # Color scheme: 'bodypart' or 'individual'
+            track_method=track_method
         )
     print(f'analyzed {video_path.name} successfully')
