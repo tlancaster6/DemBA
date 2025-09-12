@@ -1,8 +1,6 @@
-import deeplabcut as dlc
 from pathlib import Path
-import pandas as pd
-
-idx = pd.IndexSlice
+import DeepLabCut.deeplabcut as dlc
+print(dlc.__file__)
 
 def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, debug_visualize=False, skip_tracking=False, transreid=True):
     track_method = 'ellipse'
@@ -53,7 +51,7 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             n_tracks=n_fish,
             track_method=track_method,
             n_triplets=5000,
-            train_epochs=100
+            train_epochs=50
         )
         track_method='transformer'
     else:
@@ -120,3 +118,5 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             track_method=track_method
         )
     print(f'analyzed {video_path.name} successfully')
+
+
