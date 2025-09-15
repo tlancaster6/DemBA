@@ -2,7 +2,7 @@ import os.path
 from pathlib import Path
 import pandas as pd
 import cv2
-from demba.utils import estimate_roi, generate_roi_visualization
+from demba.roi_utils import generate_roi_visualization
 import re
 from itertools import permutations, combinations
 import numpy as np

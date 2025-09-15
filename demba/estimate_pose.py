@@ -1,13 +1,25 @@
 from pathlib import Path
 import DeepLabCut.deeplabcut as dlc
+import DeepLabCut.deeplabcut.pose_estimation_pytorch as pep
 print(dlc.__file__)
 
-def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, debug_visualize=False, skip_tracking=False, transreid=True):
+def check_already_analyzed(video_path):
+    video_path = Path(video_path)
+    parent_dir = video_path.parent
+    stem = video_path.stem
+    if len((list(parent_dir.glob(f'{stem}*labeled.mp4')))) > 0:
+        return True
+    return False
+
+def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, debug_visualize=False, skip_tracking=False, transreid=True, overwrite=False):
     track_method = 'ellipse'
     video_path = Path(video_path)
-    print(f'estimating pose for {video_path.name}')
+    if not overwrite:
+        if check_already_analyzed(video_path):
+            print(f'{video_path.name} already analyzed, skipping')
+    print(f'\n\nestimating pose for {video_path.name}')
     # Source: DeepLabCut/compat.py
-    dlc.analyze_videos(
+    pep.analyze_videos(
         config_path,  # Full path of the config.yaml file
         [str(video_path)],  # List of strings containing full paths to videos for analysis
         videotype="",  # Video extension filter (empty = all common extensions)
@@ -15,10 +27,13 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
         save_as_csv=True,  # Save predictions in .csv file format
         robust_nframes=False,  # Robustly evaluate video frame count (slower but robust against mild video corruption)
         n_tracks=n_fish,  # Number of tracks for multi-animal tracking
-        animal_names=[f'individual{i+1}' for i in range(n_fish)]  # List of animal names for multi-animal projects
+        animal_names=[f'individual{i+1}' for i in range(n_fish)],  # List of animal names for multi-animal projects
+        auto_track=False, # leave this as False since we want to use the below code for better control
+        overwrite=overwrite
     )
     if debug_visualize:
         # Source: DeepLabCut/utils/make_labeled_video.py
+        print('creating video with raw detections')
         dlc.create_video_with_all_detections(
             config_path,  # Full path of the config.yaml file
             [str(video_path)],  # List of strings containing full paths to videos
@@ -36,7 +51,7 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
         [str(video_path)],  # List of strings containing full paths to videos
         videotype="",  # Video extension filter (empty = all common extensions)
         shuffle=shuffle,  # Integer specifying shuffle index of training dataset
-        overwrite=True,  # Overwrite existing tracklet files
+        overwrite=overwrite,  # Overwrite existing tracklet files
         ignore_bodyparts=None,  # Body parts to ignore during tracking
         track_method=track_method  # Tracking method: 'box', 'skeleton', or 'ellipse'
     )
@@ -50,8 +65,8 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             videotype="mp4",
             n_tracks=n_fish,
             track_method=track_method,
-            n_triplets=5000,
-            train_epochs=50
+            n_triplets=1000,
+            train_epochs=100
         )
         track_method='transformer'
     else:
