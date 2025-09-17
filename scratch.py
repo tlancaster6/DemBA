@@ -32,7 +32,7 @@ video_dir = Path('/home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singl
 video_paths = video_dir.glob('*cropped.mp4')
 for vp in video_paths:
     try:
-        estimate_pose(config_path=config, video_path=vp, shuffle=3, n_fish=2, debug_visualize=False, transreid=True)
+        estimate_pose(config_path=config, video_path=vp, shuffle=3, n_fish=2, debug_visualize=False, transreid=False, stop_before_stitching=True)
     except Exception as e:
         print('-'*30)
         print(f'EXCEPTION ENCOUNTERED: {e}')

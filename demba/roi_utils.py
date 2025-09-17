@@ -18,8 +18,18 @@ def generate_roi_visualization(img, cx, cy, r, output_path):
     fig.savefig(output_path)
     plt.close(fig)
 
+def estimate_roi(frame, output_path=None):
+    frame_height, frame_width = frame.shape[:-1]
+    roi_x = frame_width / 2
+    roi_y = frame_height / 2
+    roi_r = min(frame_height, frame_width) / 2
+    if output_path is not None:
+        generate_roi_visualization(frame, roi_x, roi_y, roi_r, output_path)
+    return roi_x, roi_y, roi_r, frame_height, frame_width
 
-def estimate_roi(img, rmin=125, rmax=250, hmin=0.4, hmax=0.5, output_path=None):
+
+
+def estimate_roi_hough(img, rmin=125, rmax=250, hmin=0.4, hmax=0.5, output_path=None):
     """uses a combination of hue thresholding, morphological manipulations, and a hough circle transform to
     automatically estimate the coordinates and radius (in pixels) of a circle that encloses the roi"""
     img_rgb = img.copy()

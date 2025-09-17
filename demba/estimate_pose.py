@@ -11,7 +11,7 @@ def check_already_analyzed(video_path):
         return True
     return False
 
-def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, debug_visualize=False, skip_tracking=False, transreid=True, overwrite=False):
+def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, debug_visualize=False, stop_before_stitching=False, transreid=True, overwrite=False):
     track_method = 'ellipse'
     video_path = Path(video_path)
     if not overwrite:
@@ -29,7 +29,9 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
         n_tracks=n_fish,  # Number of tracks for multi-animal tracking
         animal_names=[f'individual{i+1}' for i in range(n_fish)],  # List of animal names for multi-animal projects
         auto_track=False, # leave this as False since we want to use the below code for better control
-        overwrite=overwrite
+        overwrite=overwrite,
+        save_as_df=True, # save the pose predictions (pre-tracking) as an h5 file
+        detector_batch_size=4
     )
     if debug_visualize:
         # Source: DeepLabCut/utils/make_labeled_video.py
@@ -41,8 +43,6 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
             shuffle=shuffle,  # Integer specifying shuffle index of training dataset
             confidence_to_alpha=True,  # Map confidence values to alpha transparency
         )
-    if skip_tracking:
-        return
 
     print('generating tracklets')
     # Source: DeepLabCut/compat.py
@@ -55,6 +55,10 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, visualize=True, 
         ignore_bodyparts=None,  # Body parts to ignore during tracking
         track_method=track_method  # Tracking method: 'box', 'skeleton', or 'ellipse'
     )
+
+    if stop_before_stitching:
+        print('stop_before_stitching=True. Continuing to next video.')
+        return
 
     if transreid:
         print('training and deploying REID transformer')

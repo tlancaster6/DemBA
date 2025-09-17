@@ -2,67 +2,52 @@ import os.path
 from pathlib import Path
 import pandas as pd
 import cv2
-from demba.roi_utils import generate_roi_visualization
-import re
-from itertools import permutations, combinations
+from demba.roi_utils import estimate_roi
+from demba.dlc_utils import load_poses
+from itertools import permutations
 import numpy as np
 import matplotlib.pyplot as plt
 from dbscan1d.core import DBSCAN1D
 from datetime import timedelta
+
 idx = pd.IndexSlice
 from matplotlib.animation import FuncAnimation
 
+ROI_RADIUS_MM = 76
+VIDEO_FPS = 30
 
 class FeatureExtractor:
 
-    def __init__(self, video_path, quivering_annotation_path, overwrite=False):
+    def __init__(self, video_path, quivering_annotation_path=None, pose_h5_path=None, mouthing_dist_mm=10, min_likelihood=0.1, n_minutes=None):
         self.video_path = str(video_path)
-        self.quivering_annotation_path = str(quivering_annotation_path)
+        self.n_minutes = n_minutes # if not None, only analyze the last n_minutes of the video
+        self.quivering_annotation_path = None if quivering_annotation_path is None else str(quivering_annotation_path)
         self.file_stem = Path(video_path).stem
         self.framefeatures_path = str(video_path).replace('.mp4', '_framefeatures.csv')
         self.clipfeatures_path = str(video_path).replace('.mp4', '_clipfeatures.csv')
-        try:
-            self.h5_path = str(next(Path(self.video_path).parent.glob(Path(self.video_path).stem + '*_filtered.h5')))
-        except StopIteration:
-            self.h5_path = None
-        self.pose_df, self.individuals, self.bodyparts = self._load_pose_data()
+        self.h5_path = str(pose_h5_path)
+        self.pose_df, self.individuals, self.bodyparts = load_poses(self.h5_path, min_likelihood=min_likelihood)
         self.roi_x, self.roi_y, self.roi_r, self.frame_height, self.frame_width = self._estimate_roi()
-        if overwrite or not (os.path.exists(self.framefeatures_path) and os.path.exists(self.clipfeatures_path)):
-            self.extract_all_features()
-        self._load_feature_csvs()
+        self.mouthing_dist_mm = mouthing_dist_mm
+        self.mouthing_dist_pixels = self._calc_mouthing_dist_pixels()
 
-    def _load_pose_data(self):
-        if self.h5_path is not None:
-            pose_df = pd.read_hdf(self.h5_path)
-            scorer = pose_df.columns.get_level_values(0)[0]
-            pose_df = pose_df.loc[:, scorer]
-            pose_df = pose_df.loc[:, idx[:, :, ('x', 'y')]]
-            pose_df.columns = pose_df.columns.remove_unused_levels()
-            pose_df = pose_df.sort_index(axis=1)
-            individuals, bodyparts = [list(pose_df.columns.levels[i]) for i in [0, 1]]
-            return pose_df, individuals, bodyparts
-        return None, None, None
-
-    def _load_feature_csvs(self):
+    def load_feature_csvs(self):
         self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0, low_memory=False)
         self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0, low_memory=False)
 
     def _estimate_roi(self):
         cap = cv2.VideoCapture(self.video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) // 2)
-        ret, frame = cap.read()
-        if not ret:
-            print(f'could not extract a reference frame from {Path(self.video_path).name}')
-            return
+        _, frame = cap.read()
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        roi_vis_path = str(self.video_path).replace('.mp4', '_roi.png')
-        frame_height, frame_width = frame.shape[:-1]
-        roi_x = frame_width/2
-        roi_y = frame_height/2
-        roi_r = frame_height/2
-        generate_roi_visualization(frame,roi_x,roi_y,roi_r, roi_vis_path)
         cap.release()
+        roi_vis_path = str(self.video_path).replace('.mp4', '_roi.png')
+        roi_x, roi_y, roi_r, frame_height, frame_width = estimate_roi(frame, output_path=roi_vis_path)
         return roi_x, roi_y, roi_r, frame_height, frame_width
+
+    def _calc_mouthing_dist_pixels(self):
+        conversion_factor = (self.roi_r / ROI_RADIUS_MM)
+        return self.mouthing_dist_mm * conversion_factor
 
     def extract_all_features(self):
         # extract frame-level features
@@ -71,21 +56,29 @@ class FeatureExtractor:
             framefeatures_df.append(self._calc_nfish_frame())
             framefeatures_df.append(self._calc_nfish_pipe())
             framefeatures_df.append(self._detect_mouthing_events())
+            framefeatures_df.append(self._detect_spawning_events(mouthing_event_ids=framefeatures_df[-1]))
             framefeatures_df.append(self._detect_double_occupancy_events())
-            framefeatures_df.append(self._detect_spawning_events())
-        male_lead_quiver, male_circle_quiver, female_circle_quiver = self._map_quivering_annotations()
-        framefeatures_df.append(male_lead_quiver)
-        framefeatures_df.append(male_circle_quiver)
-        framefeatures_df.append(female_circle_quiver)
+        if self.quivering_annotation_path is not None:
+            male_lead_quiver, male_circle_quiver, female_circle_quiver = self._map_quivering_annotations()
+            framefeatures_df.append(male_lead_quiver)
+            framefeatures_df.append(male_circle_quiver)
+            framefeatures_df.append(female_circle_quiver)
         framefeatures_df = pd.concat(framefeatures_df, axis=1)
+        if self.n_minutes is not None:
+            n_frames = self.n_minutes * 60 * VIDEO_FPS
+            framefeatures_df = framefeatures_df.tail(n_frames)
         self.framefeatures_df = framefeatures_df
         self.framefeatures_df.to_csv(self.framefeatures_path)
 
         # extract clip-level features
         clipfeatures_series = pd.Series(dtype=float)
-        clipfeatures_series['male_lead_quivering_fraction'] = self._calc_quivering_fraction("male_lead_quiver")
-        clipfeatures_series['male_circle_quivering_fraction'] = self._calc_quivering_fraction("male_circle_quiver")
-        clipfeatures_series['female_circle_quivering_fraction'] = self._calc_quivering_fraction("female_circle_quiver")
+        if self.quivering_annotation_path is not None:
+            clipfeatures_series['male_lead_quivering_fraction'] = self._calc_quivering_fraction("male_lead_quiver")
+            clipfeatures_series['male_circle_quivering_fraction'] = self._calc_quivering_fraction("male_circle_quiver")
+            clipfeatures_series['female_circle_quivering_fraction'] = self._calc_quivering_fraction("female_circle_quiver")
+            clipfeatures_series['n_male_lead_quivers'] = self._calc_n_quivers("male_lead_quiver")
+            clipfeatures_series['n_male_circle_quivers'] = self._calc_n_quivers("male_circle_quiver")
+            clipfeatures_series['n_female_circle_quivers'] = self._calc_n_quivers("female_circle_quiver")
         if self.pose_df is not None:
             clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
             clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
@@ -100,7 +93,7 @@ class FeatureExtractor:
         self.clipfeatures_df = pd.DataFrame(clipfeatures_series, columns=[self.file_stem]).T
         self.clipfeatures_df.to_csv(self.clipfeatures_path)
 
-    def _detect_mouthing_events(self, dist_thresh=25, eps=15, min_samples=15):
+    def _detect_mouthing_events(self, eps=15, min_samples=15):
         candidate_dists = []
         for id1, id2 in list(permutations(self.individuals, 2)):
             dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
@@ -108,7 +101,7 @@ class FeatureExtractor:
         if not candidate_dists:
             return pd.Series(data=-1, index=self.pose_df.index, name='mouthing_event_id')
         dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
-        subthresh_frames = dists.loc[dists < dist_thresh].index.values
+        subthresh_frames = dists.loc[dists < self.mouthing_dist_pixels].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
         for eid in event_ids.unique():
@@ -132,17 +125,14 @@ class FeatureExtractor:
         event_ids.name = 'double_occupancy_event_id'
         return event_ids
 
-    def _detect_spawning_events(self, dist_thresh=25, eps=150, min_samples=30):
-        candidate_dists = []
-        for id1, id2 in list(permutations(self.individuals, 2)):
-            dists = self.pose_df.loc[:, idx[id1, 'nose', :]].values - self.pose_df.loc[:, idx[id2, 'stripe4', :]].values
-            candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
-        if not candidate_dists:
-            return pd.Series(data=-1, index=self.pose_df.index, name='spawning_event_id')
-        dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
-        subthresh_frames = dists.loc[dists < dist_thresh].index.values
-        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
-        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
+    def _detect_spawning_events(self, mouthing_event_ids=None, eps=150, min_samples=6):
+        if mouthing_event_ids is None:
+            mouthing_event_ids = self._detect_mouthing_events()
+        mouthing_event_start_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').first().loc[0:]['index'].values
+        mouthing_event_end_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').last().loc[0:]['index'].values
+        combined_mouthing_event_frames = np.concatenate((mouthing_event_start_frames, mouthing_event_end_frames))
+        labels = DBSCAN1D(eps, min_samples).fit_predict(combined_mouthing_event_frames)
+        event_ids = pd.Series(data=labels, index=combined_mouthing_event_frames).reindex(mouthing_event_ids.index, fill_value=-1)
         for eid in event_ids.unique():
             if eid >= 0:
                 start_idx = event_ids[event_ids == eid].index.min()
@@ -205,15 +195,24 @@ class FeatureExtractor:
         return value_counts
 
     def _calc_quivering_fraction(self, quivering):
-        quivering_fraction = self.framefeatures_df[quivering].sum() / len(self.framefeatures_df[quivering])
+        n_quivering_frames = len(self.framefeatures_df[self.framefeatures_df[quivering] >= 0])
+        quivering_fraction = n_quivering_frames / len(self.framefeatures_df)
         return quivering_fraction
-        
+
+    def _calc_n_quivers(self, quivering):
+        event_ids = self.framefeatures_df[self.framefeatures_df[quivering] >= 0][quivering]
+        n_events = len(event_ids.unique())
+        return n_events
+
     def _clean_metadata_string(self, meta_str):
         meta_dict = eval(meta_str)
         return meta_dict["TEMPORAL-SEGMENTS"]
         
     def _map_quivering_annotations(self):
-        ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem, skiprows=1)
+        try:
+            ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem, skiprows=1)
+        except ValueError:
+            ref_df = pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem.split('cropped')[0], skiprows=1)
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end', 'metadata']]
         ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * 30).apply(np.round)
         ref_df["temporal_segment_end"] = (ref_df["temporal_segment_end"]  * 30).apply(np.round)
@@ -250,6 +249,12 @@ class FeatureExtractor:
                     male_circle_quiver.iloc[0: int(event.temporal_segment_end)] = True
                 elif metadata == "female-circle-quiver":
                     female_circle_quiver.iloc[0: int(event.temporal_segment_end)] = True
+        transformed_series = []
+        for data_series in male_lead_quiver, male_circle_quiver, female_circle_quiver:
+            event_ids = (data_series != data_series.shift()).cumsum() * data_series - 1
+            event_ids = event_ids.where(data_series, -1)
+            transformed_series.append(event_ids)
+        male_lead_quiver, male_circle_quiver, female_circle_quiver = transformed_series
         return male_lead_quiver, male_circle_quiver, female_circle_quiver
 
     def visualize_features(self, overwrite=True):
@@ -331,27 +336,31 @@ def concat_clipfeature_csvs(parent_dir):
     df.to_csv(str(parent_dir / 'collated_clipfeatures.csv'))
     pd.concat(rows, axis=0)
 
+def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False):
+    video_path = Path(video_path)
+    print(f'processing {video_path.stem}')
+    fe = FeatureExtractor(video_path, quivering_annotation_path, pose_h5_path)
+    fe.extract_all_features()
+    fe.generate_predicted_double_occupancy_summary()
+    fe.generate_predicted_spawning_summary()
+    if visualize:
+        print(f'generating visualization for {video_path.stem}')
+        fe.visualize_features()
 
-def process_all(parent_dir, quivering_annotation_path, overwrite=False, visualize=False):
+def process_all(parent_dir, quivering_annotation_path, visualize=False):
     parent_dir = Path(parent_dir)
-    vid_paths = list(parent_dir.glob('**/*.mp4'))
-    pattern = '((CTRL)|(BHVE))_group\d.mp4'
-    vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+    vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
     for vp in vid_paths:
-        print(f'processing {vp.stem}')
-        fe = FeatureExtractor(vp, quivering_annotation_path, overwrite=overwrite)
-        fe.generate_predicted_double_occupancy_summary()
-        fe.generate_predicted_spawning_summary()
-        if visualize:
-            print(f'generating visualization for {vp.stem}')
-            fe.visualize_features()
-
+        try:
+            pose_h5_path = list(vp.parent.glob(f'{vp.stem}*[0-9].h5'))[0]
+        except IndexError:
+            pose_h5_path = None
+        process_video(vp, quivering_annotation_path, pose_h5_path, visualize=visualize)
+    print('all videos processed')
 
 def delete_outputs(parent_dir, keep_pose_data=True):
     parent_dir = Path(parent_dir)
-    vid_paths = list(parent_dir.glob('**/*.mp4'))
-    pattern = r'((CTRL)|(BHVE))_group\d.mp4'
-    vid_paths = [p for p in vid_paths if re.fullmatch(pattern, p.name)]
+    vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
     targets = ['*_assemblies.pickle', '*_el.h5', '*_el.pickle', '*_filtered.csv', '*_filtered.h5', '*_labeled.mp4',
                '*_framefeatures.csv', '*_clipfeatures.csv', '*_featurevis.mp4', '*_roi.png']
     if not keep_pose_data:
