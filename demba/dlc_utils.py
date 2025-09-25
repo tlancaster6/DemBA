@@ -1,12 +1,14 @@
 import pickle
 import pandas as pd
 import numpy as np
-from DeepLabCut.deeplabcut.pose_estimation_pytorch.apis.videos import create_df_from_prediction
-from DeepLabCut.deeplabcut.pose_estimation_pytorch.data import DLCLoader
 from pathlib import Path
+import re
 idx = pd.IndexSlice
 
 def load_bboxes(full_pickle_path):
+    """
+    load bounding boxes from the "..._full.picle" file
+    """
     with open(full_pickle_path, 'rb') as handle:
         full_data = pickle.load(handle)
     bbox_dict = {}
@@ -45,6 +47,9 @@ def load_poses(pose_h5_path, min_likelihood=0.1):
     return pose_df, individuals, bodyparts
 
 def parse_full_pickle_path(full_pickle_path):
+    """
+    parse the _full.pickle file path into its constituent parts
+    """
     full_pickle_path = Path(full_pickle_path)
     full_pickle_name = full_pickle_path.name
     parse_results = {}
@@ -53,3 +58,11 @@ def parse_full_pickle_path(full_pickle_path):
     parse_results['shuffle'] = int(full_pickle_name.split('shuffle')[1][0])
     parse_results['parent_dir'] = str(full_pickle_path.parent)
     return parse_results
+
+def parse_trial_name(name):
+    name = str(name).upper()
+    for pattern, is_control in [(r'DB(\d+)', False), (r'DC(\d+)', True),
+                               (r'BHVE.*?GROUP.*?(\d+)', False), (r'CTRL.*?GROUP.*?(\d+)', True)]:
+        if m := re.search(pattern, name):
+            return (int(m.group(1)), int(is_control))
+    return (float('inf'), 2)
