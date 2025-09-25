@@ -7,7 +7,9 @@ idx = pd.IndexSlice
 
 def load_bboxes(full_pickle_path):
     """
-    load bounding boxes from the "..._full.picle" file
+    load bounding boxes (and scores) from the "..._full.pickle" file
+    :param full_pickle_path: path to "_full.pickle" file
+    :return: dictionary containing bounding boxes and likelihoods for each frame
     """
     with open(full_pickle_path, 'rb') as handle:
         full_data = pickle.load(handle)
@@ -20,6 +22,13 @@ def load_bboxes(full_pickle_path):
     return bbox_dict
 
 def load_poses(pose_h5_path, min_likelihood=0.1):
+    """
+    load pose data from an h5 file, strip some junk out of the multi-index column names, and (optionally) filter low
+    confidence poses (replace with nan)
+    :param pose_h5_path: path to pose h5 file
+    :param min_likelihood: for poses with likelihoods before this threshold, replace the coordinates and likelihood with nan
+    :return: dataframe of poses along with a list of individuals and a list of body-parts
+    """
     if pose_h5_path is None:
         return None, None, None
     pose_df = pd.read_hdf(pose_h5_path)
@@ -49,6 +58,8 @@ def load_poses(pose_h5_path, min_likelihood=0.1):
 def parse_full_pickle_path(full_pickle_path):
     """
     parse the _full.pickle file path into its constituent parts
+    :param full_pickle_path: path to _full.pickle file
+    :return: dictionary of parsing results
     """
     full_pickle_path = Path(full_pickle_path)
     full_pickle_name = full_pickle_path.name
@@ -60,9 +71,14 @@ def parse_full_pickle_path(full_pickle_path):
     return parse_results
 
 def parse_trial_name(name):
+    """
+    parse a trial name to infer the group number and whether it is a behave or control trial
+    :param name: trial name
+    :return: the group number (int) and whether it is a control trial (bool)
+    """
     name = str(name).upper()
     for pattern, is_control in [(r'DB(\d+)', False), (r'DC(\d+)', True),
                                (r'BHVE.*?GROUP.*?(\d+)', False), (r'CTRL.*?GROUP.*?(\d+)', True)]:
         if m := re.search(pattern, name):
-            return (int(m.group(1)), int(is_control))
-    return (float('inf'), 2)
+            return int(m.group(1)), int(is_control)
+    return np.nan, np.nan
