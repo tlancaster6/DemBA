@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import re
+from DeepLabCut.deeplabcut.refine_training_dataset.stitch import Tracklet
 idx = pd.IndexSlice
 
 def load_bboxes(full_pickle_path):
@@ -54,6 +55,36 @@ def load_poses(pose_h5_path, min_likelihood=0.1):
         pose_df.loc[mask, y_col] = np.nan
 
     return pose_df, individuals, bodyparts
+
+def load_tracklets(tracklet_pickle_path):
+
+    def get_frame_ind(s):
+        if isinstance(s, str):
+            return int(re.findall(r"\d+", s)[0])
+        return s
+
+    with open(tracklet_pickle_path, 'rb') as handle:
+        data = pickle.load(handle)
+
+    tracklets = []
+    header = data.pop("header", None)
+    for k, dict_ in data.items():
+        try:
+            inds, data = zip(*[(get_frame_ind(k), v) for k, v in dict_.items()])
+        except ValueError:
+            continue
+        inds = np.asarray(inds)
+        data = np.asarray(data)
+        try:
+            nrows, ncols = data.shape
+            # Detect if data has identity column (4 features) or not (3 features)
+            n_features = 4 if ncols % 4 == 0 else 3
+            data = data.reshape((nrows, ncols // n_features, n_features))
+        except ValueError:
+            pass
+        tracklets.append(Tracklet(data, inds))
+    return tracklets, header
+
 
 def parse_full_pickle_path(full_pickle_path):
     """

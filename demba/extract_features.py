@@ -18,8 +18,41 @@ ROI_RADIUS_MM = 79.375
 VIDEO_FPS = 30
 
 class FeatureExtractor:
+    """
+    Extracts behavioral features from zebrafish courtship videos with DeepLabCut pose estimation.
+
+    Analyzes videos to detect and quantify spawning-related behaviors including mouthing events
+    (nose-to-genital proximity), double occupancy of breeding pipe, and spawning bouts. Integrates
+    optional manual quivering annotations with automated pose-based detections.
+
+    Frame-level features track instantaneous behaviors across all frames. Clip-level features
+    aggregate statistics over the entire video. Supports temporal windowing to analyze specific
+    portions (e.g., last N minutes).
+
+    Attributes:
+        video_path (str): Path to input video file
+        pose_df (pd.DataFrame): Multi-index DataFrame with shape (n_frames, n_individuals*n_bodyparts*3)
+                                where columns are (individual, bodypart, coord) with coord in {x, y, likelihood}
+        individuals (list): Names of tracked individuals (e.g., ['individual1', 'individual2'])
+        bodyparts (list): Names of tracked body parts (e.g., ['nose', 'stripe1', ..., 'stripe4'])
+        roi_x, roi_y, roi_r (float): Breeding pipe ROI center coordinates and radius in pixels
+        mouthing_dist_pixels (float): Distance threshold for mouthing detection in pixels
+        framefeatures_df (pd.DataFrame): Frame-by-frame behavioral features
+        clipfeatures_df (pd.DataFrame): Aggregated clip-level statistics
+    """
 
     def __init__(self, video_path, quivering_annotation_path=None, pose_h5_path=None, mouthing_dist_mm=10, min_likelihood=0.5, n_minutes=None):
+        """
+        Initialize FeatureExtractor with video, pose data, and processing parameters.
+
+        Args:
+            video_path (str/Path): Path to .mp4 video file
+            quivering_annotation_path (str/Path, optional): Path to Excel file with manual quivering annotations
+            pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
+            mouthing_dist_mm (float): Maximum nose-to-genital distance in mm to count as mouthing event
+            min_likelihood (float): Minimum keypoint confidence threshold (0-1) for pose filtering
+            n_minutes (int, optional): If provided, only analyze the last n_minutes of video
+        """
         self.video_path = str(video_path)
         self.n_minutes = n_minutes # if not None, only analyze the last n_minutes of the video
         self.quivering_annotation_path = None if quivering_annotation_path is None else str(quivering_annotation_path)
@@ -40,10 +73,39 @@ class FeatureExtractor:
         self.mouthing_dist_pixels = self._calc_mouthing_dist_pixels()
 
     def load_feature_csvs(self):
+        """
+        Load previously computed frame-level and clip-level feature CSVs from disk.
+
+        Populates self.framefeatures_df and self.clipfeatures_df attributes. Use this to reload
+        features without re-computing, enabling downstream analysis without full re-extraction.
+        """
         self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0, low_memory=False)
         self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0, low_memory=False)
 
     def extract_all_features(self):
+        """
+        Extract all frame-level and clip-level behavioral features from video.
+
+        Frame-level features (computed per frame):
+            - nfish_frame: Number of individuals with any detected keypoints
+            - nfish_pipe: Number of individuals with stripe1 inside breeding pipe ROI
+            - min_dist_nose_to_stripe4: Minimum distance across all nose-stripe4 pairs (pixels)
+            - mouthing_event_id: Event ID for mouthing bouts (-1 if not mouthing)
+            - spawning_event_id: Event ID for spawning bouts (-1 if not spawning)
+            - double_occupancy_event_id: Event ID for double occupancy bouts (-1 if single/zero)
+            - male_lead_quiver, male_circle_quiver, female_circle_quiver: Event IDs from annotations
+
+        Clip-level features (aggregated over video):
+            - n_mouthing_events, n_spawning_events, n_double_occupancy_events: Event counts
+            - mouthing_event_fraction, spawning_event_fraction, double_occupancy_event_fraction: Time fractions
+            - raw_*_occupancy_fraction: Fraction of frames with 0/1/2/3 fish in pipe
+            - roi_x, roi_y, roi_r: Pipe location and size
+            - n_*_quivers: Count of quivering events by type
+            - *_quivering_fraction: Fraction of time spent quivering
+            - mouthing_quivering_phi, mouthing_quivering_jaccard: Co-occurrence metrics
+
+        Saves framefeatures_df to *_framefeatures.csv and clipfeatures_df to *_clipfeatures.csv.
+        """
         # extract frame-level features
         framefeatures_df = []
         if self.pose_df is not None:
@@ -92,6 +154,15 @@ class FeatureExtractor:
         self.clipfeatures_df.to_csv(self.clipfeatures_path)
 
     def _load_quivering_annotations(self):
+        """
+        Load manual quivering annotations from Excel file.
+
+        Searches for sheet matching video stem (with or without 'cropped' suffix). Returns DataFrame
+        with columns: temporal_segment_start, temporal_segment_end, metadata (quivering type).
+
+        Returns:
+            pd.DataFrame or None: Annotation data if found, None otherwise
+        """
         if self.quivering_annotation_path is None:
             return None
         sheet_names = pd.ExcelFile(self.quivering_annotation_path).sheet_names
@@ -103,6 +174,15 @@ class FeatureExtractor:
             return None
 
     def _estimate_roi(self):
+        """
+        Automatically detect breeding pipe ROI from middle frame of video.
+
+        Uses Hough circle detection to find circular pipe structure. Saves visualization
+        of detected ROI to *_roi.png file.
+
+        Returns:
+            tuple: (roi_x, roi_y, roi_r, frame_height, frame_width) in pixels
+        """
         cap = cv2.VideoCapture(self.video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) // 2)
         _, frame = cap.read()
@@ -113,10 +193,28 @@ class FeatureExtractor:
         return roi_x, roi_y, roi_r, frame_height, frame_width
 
     def _calc_mouthing_dist_pixels(self):
+        """
+        Convert mouthing distance threshold from mm to pixels using ROI as reference.
+
+        Uses breeding pipe radius as known reference (79.375 mm) to calibrate pixel-to-mm conversion.
+
+        Returns:
+            float: Mouthing distance threshold in pixels
+        """
         conversion_factor = (self.roi_r / ROI_RADIUS_MM)
         return self.mouthing_dist_mm * conversion_factor
 
     def _calc_interaction_distances(self):
+        """
+        Calculate minimum nose-to-genital (stripe4) distance across all individual pairs.
+
+        Mouthing behavior involves male approaching female genital region. Computes Euclidean
+        distance between each individual's nose and every other individual's stripe4 (genital marker).
+        Takes minimum across all directional pairs.
+
+        Returns:
+            pd.Series: Per-frame minimum distance in pixels, name='min_dist_nose_to_stripe4'
+        """
         candidate_dists = []
         for id1, id2 in list(permutations(self.individuals, 2)):
             # Use explicit x,y column selection to avoid column ordering issues
@@ -130,6 +228,20 @@ class FeatureExtractor:
         return dists
 
     def _detect_mouthing_events(self, dists=None, eps=5, min_samples=10):
+        """
+        Detect mouthing events using temporal clustering of sub-threshold nose-genital distances.
+
+        Uses DBSCAN1D to group nearby frames where distance < mouthing_dist_pixels. Fills gaps
+        within events to handle brief tracking failures. Events must span at least min_samples frames.
+
+        Args:
+            dists (pd.Series, optional): Pre-computed interaction distances. If None, computes them.
+            eps (int): Maximum gap in frames to consider same event (DBSCAN epsilon)
+            min_samples (int): Minimum frames required to qualify as event
+
+        Returns:
+            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='mouthing_event_id'
+        """
         subthresh_frames = dists.loc[dists < self.mouthing_dist_pixels].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
@@ -142,6 +254,19 @@ class FeatureExtractor:
         return event_ids
 
     def _detect_double_occupancy_events(self, eps=30, min_samples=30):
+        """
+        Detect sustained double occupancy of breeding pipe using temporal clustering.
+
+        Both fish entering pipe together is prerequisite for spawning. Uses DBSCAN1D to identify
+        continuous bouts where exactly 2 fish are inside pipe ROI. Fills gaps and requires minimum duration.
+
+        Args:
+            eps (int): Maximum gap in frames to consider same event (default 30 = 1 second at 30fps)
+            min_samples (int): Minimum frames required to qualify as event (default 30 = 1 second)
+
+        Returns:
+            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='double_occupancy_event_id'
+        """
         nfish_pipe = self._calc_nfish_pipe()
         double_occupancy_frames = nfish_pipe[nfish_pipe == 2].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(double_occupancy_frames)
@@ -155,6 +280,20 @@ class FeatureExtractor:
         return event_ids
 
     def _detect_spawning_events(self, mouthing_event_ids=None, eps=300, min_samples=6):
+        """
+        Detect spawning events as clusters of mouthing events in temporal proximity.
+
+        Spawning consists of multiple mouthing bouts in quick succession. Uses DBSCAN1D on start/end
+        frames of mouthing events to identify temporal clusters indicating spawning bouts.
+
+        Args:
+            mouthing_event_ids (pd.Series, optional): Pre-computed mouthing events. If None, computes them.
+            eps (int): Maximum gap in frames between mouthing events in same spawning bout (default 300 = 10s)
+            min_samples (int): Minimum mouthing event endpoints required to qualify as spawning
+
+        Returns:
+            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='spawning_event_id'
+        """
         if mouthing_event_ids is None:
             mouthing_event_ids = self._detect_mouthing_events()
         mouthing_event_start_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').first().loc[0:]['index'].values
@@ -171,11 +310,30 @@ class FeatureExtractor:
         return event_ids
 
     def _calc_nfish_frame(self):
+        """
+        Count number of individuals detected in frame based on any visible keypoint.
+
+        Individual is considered present if ANY of their bodyparts has valid (non-NaN) pose estimate
+        after likelihood filtering. More permissive than nfish_pipe which requires specific location.
+
+        Returns:
+            pd.Series: Per-frame count of detected individuals, name='nfish_frame'
+        """
         nfish_frame = self.pose_df.groupby('individuals', axis=1).any().sum(axis=1)
         nfish_frame.name = 'nfish_frame'
         return nfish_frame
 
     def _calc_nfish_pipe(self):
+        """
+        Count number of individuals inside breeding pipe ROI based on stripe1 position.
+
+        Uses stripe1 (mid-body keypoint) to determine if fish is inside circular pipe ROI.
+        Computes Euclidean distance from stripe1 to ROI center and checks if <= roi_r.
+        More conservative than nfish_frame, requires fish to be in specific breeding location.
+
+        Returns:
+            pd.Series: Per-frame count of individuals inside pipe, name='nfish_pipe'
+        """
         # Get only x,y coordinates for stripe1 to avoid including likelihood in distance calculation
         tmp_df = self.pose_df.loc[:, idx[:, 'stripe1', ['x', 'y']]].copy()
         tmp_df.loc[:, idx[:, :, 'x']] -= self.roi_x
@@ -186,36 +344,80 @@ class FeatureExtractor:
         return nfish_pipe
 
     def _calc_n_mouthing_events(self):
+        """
+        Count total number of distinct mouthing events in video.
+
+        Returns:
+            int: Number of unique mouthing event IDs
+        """
         event_ids = self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0].mouthing_event_id
         n_events = len(event_ids.unique())
         return n_events
 
     def _calc_n_double_occupancy_events(self):
+        """
+        Count total number of distinct double occupancy events in video.
+
+        Returns:
+            int: Number of unique double occupancy event IDs
+        """
         event_ids = self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0].double_occupancy_event_id
         n_events = len(event_ids.unique())
         return n_events
 
     def _calc_n_spawning_events(self):
+        """
+        Count total number of distinct spawning events in video.
+
+        Returns:
+            int: Number of unique spawning event IDs
+        """
         event_ids = self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0].spawning_event_id
         n_events = len(event_ids.unique())
         return n_events
 
     def _calc_spawning_event_fraction(self):
+        """
+        Calculate fraction of video time spent in spawning events.
+
+        Returns:
+            float: Proportion of frames with spawning_event_id >= 0 (range 0-1)
+        """
         n_spawning_frames = len(self.framefeatures_df[self.framefeatures_df.spawning_event_id >= 0])
         spawning_fraction = n_spawning_frames / len(self.framefeatures_df)
         return spawning_fraction
 
     def _calc_double_occupancy_event_fraction(self):
+        """
+        Calculate fraction of video time spent in double occupancy events.
+
+        Returns:
+            float: Proportion of frames with double_occupancy_event_id >= 0 (range 0-1)
+        """
         n_double_occupancy_frames = len(self.framefeatures_df[self.framefeatures_df.double_occupancy_event_id >= 0])
         double_occupancy_fraction = n_double_occupancy_frames / len(self.framefeatures_df)
         return double_occupancy_fraction
 
     def _calc_mouthing_event_fraction(self):
+        """
+        Calculate fraction of video time spent in mouthing events.
+
+        Returns:
+            float: Proportion of frames with mouthing_event_id >= 0 (range 0-1)
+        """
         n_mouthing_frames = len(self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0])
         mouthing_fraction = n_mouthing_frames / len(self.framefeatures_df)
         return mouthing_fraction
 
     def _calc_roi_occupancy_fractions(self):
+        """
+        Calculate fraction of time with 0, 1, 2, or 3 fish inside breeding pipe.
+
+        Returns:
+            pd.Series: Fractions for each occupancy level with keys:
+                'raw_zero_occupancy_fraction', 'raw_single_occupancy_fraction',
+                'raw_double_occupancy_fraction', 'raw_triple_occupancy_fraction'
+        """
         value_counts = self.framefeatures_df.nfish_pipe.value_counts(normalize=True)
         value_counts = value_counts.reindex([0, 1, 2, 3], fill_value=0.0)
         value_counts = value_counts.rename(index={0: 'raw_zero_occupancy_fraction',
@@ -225,16 +427,43 @@ class FeatureExtractor:
         return value_counts
 
     def _calc_quivering_fraction(self, quivering):
+        """
+        Calculate fraction of video time spent in specified quivering behavior.
+
+        Args:
+            quivering (str): Column name ('male_lead_quiver', 'male_circle_quiver', or 'female_circle_quiver')
+
+        Returns:
+            float: Proportion of frames with quivering event ID >= 0
+        """
         n_quivering_frames = len(self.framefeatures_df[self.framefeatures_df[quivering] >= 0])
         quivering_fraction = n_quivering_frames / len(self.framefeatures_df)
         return quivering_fraction
 
     def _calc_n_quivers(self, quivering):
+        """
+        Count number of distinct quivering events of specified type.
+
+        Args:
+            quivering (str): Column name ('male_lead_quiver', 'male_circle_quiver', or 'female_circle_quiver')
+
+        Returns:
+            int: Number of unique quivering event IDs
+        """
         event_ids = self.framefeatures_df[self.framefeatures_df[quivering] >= 0][quivering]
         n_events = len(event_ids.unique())
         return n_events
 
     def _calc_mouthing_quivering_phi(self):
+        """
+        Calculate Phi coefficient (correlation) between mouthing and quivering behaviors.
+
+        Measures association between automated mouthing detection and manual quivering annotations.
+        Phi coefficient ranges from -1 (perfect negative correlation) to +1 (perfect positive correlation).
+
+        Returns:
+            float: Phi coefficient between mouthing and any quivering (male or female circle)
+        """
         mouthing_events = self.framefeatures_df.mouthing_event_id >= 0
         male_circle_quivers = self.framefeatures_df.male_circle_quiver >= 0
         female_circle_quivers = self.framefeatures_df.female_circle_quiver >= 0
@@ -243,6 +472,15 @@ class FeatureExtractor:
         return phi
 
     def _calc_mouthing_quivering_jaccard(self):
+        """
+        Calculate Jaccard index (overlap) between mouthing and quivering behaviors.
+
+        Measures temporal overlap as: (intersection) / (union). Jaccard index ranges from
+        0 (no overlap) to 1 (perfect overlap) between mouthing and quivering frames.
+
+        Returns:
+            float: Jaccard index between mouthing and any quivering (male or female circle)
+        """
         mouthing_events = self.framefeatures_df.mouthing_event_id >= 0
         male_circle_quivers = self.framefeatures_df.male_circle_quiver >= 0
         female_circle_quivers = self.framefeatures_df.female_circle_quiver >= 0
@@ -251,10 +489,30 @@ class FeatureExtractor:
         return jaccard
 
     def _clean_metadata_string(self, meta_str):
+        """
+        Extract quivering type from annotation metadata string.
+
+        Args:
+            meta_str (str): Raw metadata string containing TEMPORAL-SEGMENTS field
+
+        Returns:
+            str: Quivering type ('male-lead-quiver', 'male-circle-quiver', or 'female-circle-quiver')
+        """
         meta_dict = eval(meta_str)
         return meta_dict["TEMPORAL-SEGMENTS"]
         
     def _map_quivering_annotations(self):
+        """
+        Convert manual quivering annotations from temporal segments to frame-level event IDs.
+
+        Reads Excel annotations with start/end times (in seconds) and metadata labels, converts to
+        frame indices (30 fps), and creates binary event series. Consecutive frames of same behavior
+        get unique sequential event IDs. Handles annotations extending beyond video bounds.
+
+        Returns:
+            tuple: (male_lead_quiver, male_circle_quiver, female_circle_quiver) as pd.Series with
+                   event IDs (>=0 during events, -1 otherwise)
+        """
         ref_df = self.quivering_annotation_df.copy()
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end', 'metadata']]
         ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * 30).apply(np.round)
@@ -301,6 +559,22 @@ class FeatureExtractor:
         return male_lead_quiver, male_circle_quiver, female_circle_quiver
 
     def visualize_features(self, overwrite=True, batch_size=300, full_vis=False):
+        """
+        Generate annotated video visualization of spawning events with pose overlays.
+
+        Creates video showing spawning event frames with pose keypoints (nose and stripe4),
+        interaction lines color-coded by distance (green=mouthing, red=normal), and text overlay
+        of frame features. By default shows only spawning events; use full_vis=True for entire video.
+        Black separator frames inserted between distinct spawning events.
+
+        Args:
+            overwrite (bool): If False, skip if output video already exists
+            batch_size (int): Number of frames to read at once for efficiency (default 300)
+            full_vis (bool): If True, visualize entire video; if False, only spawning event frames
+
+        Saves:
+            *_featurevis.mp4: Annotated video with 2-panel layout (video + text features)
+        """
         def stream_frames_batch(cap, start_frame, batch_size):
             """Read batch_size frames sequentially starting from start_frame"""
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)  # Seek once per batch
@@ -520,6 +794,15 @@ class FeatureExtractor:
         print(f"Summary: {spawning_frame_count} spawning event frames + {separator_count} separator frames")
 
     def generate_predicted_spawning_summary(self):
+        """
+        Generate CSV summary of detected spawning events with timestamps.
+
+        Creates human-readable table with event_id, start time, and stop time (HH:MM:SS format).
+        Useful for quickly scanning through detected spawning bouts without watching full video.
+
+        Saves:
+            *_predicted_spawning_summary.csv: Table of spawning event timings
+        """
         if self.pose_df is None:
             return
         outfile_path = str(self.video_path).replace('.mp4', f'{self.param_suffix}_predicted_spawning_summary.csv')
@@ -534,6 +817,15 @@ class FeatureExtractor:
         df.to_csv(outfile_path, index='event_id')
 
     def generate_predicted_double_occupancy_summary(self):
+        """
+        Generate CSV summary of detected double occupancy events with timestamps.
+
+        Creates human-readable table with event_id, start time, and stop time (HH:MM:SS format).
+        Useful for analyzing when both fish are simultaneously in breeding pipe.
+
+        Saves:
+            *_predicted_double_occupancy_summary.csv: Table of double occupancy event timings
+        """
         if self.pose_df is None:
             return
         outfile_path = str(self.video_path).replace('.mp4', f'{self.param_suffix}_predicted_double_occupancy_summary.csv')
@@ -549,6 +841,18 @@ class FeatureExtractor:
 
 
 def concat_clipfeature_csvs(parent_dir):
+    """
+    Concatenate all clip-level feature CSVs in directory tree into single collated file.
+
+    Recursively finds all *_clipfeatures.csv files, concatenates them with video names as index,
+    sorts alphabetically, and saves to collated_clipfeatures.csv in parent directory.
+
+    Args:
+        parent_dir (str/Path): Root directory to search for clipfeature CSV files
+
+    Saves:
+        collated_clipfeatures.csv: Combined DataFrame with one row per video
+    """
     parent_dir = Path(parent_dir)
     clipfeature_csv_paths = list(parent_dir.glob('**/*_clipfeatures.csv'))
     rows = []
@@ -560,6 +864,23 @@ def concat_clipfeature_csvs(parent_dir):
     pd.concat(rows, axis=0)
 
 def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False, n_minutes=None, min_likelihood=0.5):
+    """
+    Extract behavioral features from single video file.
+
+    Convenience function that initializes FeatureExtractor, runs feature extraction, and optionally
+    generates visualization. Prints progress messages to console.
+
+    Args:
+        video_path (str/Path): Path to .mp4 video file
+        quivering_annotation_path (str/Path, optional): Path to Excel file with manual annotations
+        pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
+        visualize (bool): If True, generate annotated video visualization after extraction
+        n_minutes (int, optional): If provided, only analyze last n_minutes of video
+        min_likelihood (float): Minimum keypoint confidence threshold (0-1)
+
+    Saves:
+        *_framefeatures.csv, *_clipfeatures.csv, and optionally *_featurevis.mp4
+    """
     video_path = Path(video_path)
     print(f'processing {video_path.stem}')
     if quivering_annotation_path is not None:
@@ -573,6 +894,22 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
         fe.visualize_features()
 
 def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minutes=None, min_likelihood=0.5):
+    """
+    Batch process all videos in directory tree.
+
+    Recursively finds all *cropped.mp4 videos, matches them with corresponding pose .h5 files
+    (searches for pattern *cropped*[0-9].h5), and processes each. Handles missing pose files gracefully.
+
+    Args:
+        parent_dir (str/Path): Root directory containing videos and pose files
+        quivering_annotation_path (str/Path): Path to Excel file with manual annotations for all videos
+        visualize (bool): If True, generate annotated video visualizations for all videos
+        n_minutes (int, optional): If provided, only analyze last n_minutes of each video
+        min_likelihood (float): Minimum keypoint confidence threshold (0-1)
+
+    Saves:
+        Feature CSVs for each video, plus visualizations if requested
+    """
     parent_dir = Path(parent_dir)
     vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
     for vp in vid_paths:
@@ -584,6 +921,22 @@ def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minute
     print('all videos processed')
 
 def delete_outputs(parent_dir, keep_pose_data=True):
+    """
+    Clean up generated output files from directory tree.
+
+    Removes feature extraction outputs, visualizations, and optionally pose estimation files.
+    Useful for re-running pipeline with different parameters or freeing disk space.
+
+    Args:
+        parent_dir (str/Path): Root directory to clean
+        keep_pose_data (bool): If True, keep *_full.pickle, *_meta.pickle, and *_full.mp4 pose files.
+                               If False, delete those as well (requires re-running DLC inference)
+
+    Deletes:
+        Always: *_assemblies.pickle, *_el.h5, *_el.pickle, *_filtered.csv, *_filtered.h5,
+                *_labeled.mp4, *_framefeatures.csv, *_clipfeatures.csv, *_featurevis.mp4, *_roi.png
+        If keep_pose_data=False: *_full.pickle, *_meta.pickle, *_full.mp4
+    """
     parent_dir = Path(parent_dir)
     vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
     targets = ['*_assemblies.pickle', '*_el.h5', '*_el.pickle', '*_filtered.csv', '*_filtered.h5', '*_labeled.mp4',
