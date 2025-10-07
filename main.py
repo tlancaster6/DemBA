@@ -78,27 +78,17 @@ def cmd_filter(args):
 
 def cmd_features(args):
     """Extract behavioral features from video(s)."""
-    from demba.feature_extraction import process_video, process_all
+    from demba.feature_extraction import process_video
 
-    if args.batch:
-        print(f"Processing all videos in: {args.parent_dir}")
-        process_all(
-            parent_dir=args.parent_dir,
-            quivering_annotation_path=args.quivering_annotations,
-            visualize=args.visualize,
-            n_minutes=args.n_minutes,
-            min_likelihood=args.min_likelihood
-        )
-    else:
-        print(f"Processing video: {args.video}")
-        process_video(
-            video_path=args.video,
-            quivering_annotation_path=args.quivering_annotations,
-            pose_h5_path=args.pose_h5,
-            visualize=args.visualize,
-            n_minutes=args.n_minutes,
-            min_likelihood=args.min_likelihood
-        )
+    print(f"Processing video: {args.video}")
+    process_video(
+        video_path=args.video,
+        quivering_annotation_path=args.quivering_annotations,
+        pose_h5_path=args.pose_h5,
+        visualize=args.visualize,
+        n_minutes=args.n_minutes,
+        min_likelihood=args.min_likelihood
+    )
     print(" Feature extraction complete")
 
 
@@ -108,8 +98,8 @@ def cmd_visualize(args):
 
     print(f"Creating labeled video for: {args.video}")
     create_labeled_video(
-        config_path=args.dlc_config,
-        video_path=args.video,
+        config_path=args.dlc_config.resolve(),
+        video_path=args.video.resolve(),
         shuffle=args.shuffle,
         filtered=args.filtered
     )
@@ -150,53 +140,48 @@ def cmd_full(args):
     print("="*60)
 
     # Step 1: Pose estimation
-    if not args.skip_pose:
-        print("\n[1/7] Running pose estimation...")
-        cmd_pose(args)
-    else:
-        print("\n[1/7] Skipping pose estimation")
+    print("\n[1/7] Running pose estimation...")
+    cmd_pose(args)
+
+    # Infer file paths from pose estimation output
+    video_dir = args.video.parent
+    full_pickle_matches = list(video_dir.glob('*_full.pickle'))
+    if not full_pickle_matches:
+        raise FileNotFoundError(f"Pose estimation did not produce expected *_full.pickle file in {video_dir}")
+
+    # Derive tracklet and output paths from the _full.pickle filename
+    full_pickle_path = full_pickle_matches[0]
+    file_stem = str(full_pickle_path.name).replace('_full.pickle', '')
+    args.tracklet_pickle = video_dir / f"{file_stem}_el.pickle"
+    args.output_h5 = video_dir / f"{file_stem}_el.h5"
+    args.pose_h5 = args.output_h5
 
     # Step 2: Identity correction
-    if not args.skip_id_correction:
-        print("\n[2/7] Running identity correction...")
-        cmd_id_correction(args)
-    else:
-        print("\n[2/7] Skipping identity correction")
+    print("\n[2/7] Running identity correction...")
+    cmd_id_correction(args)
 
     # Step 3: Tracklet stitching
-    if not args.skip_stitch:
-        print("\n[3/7] Running tracklet stitching...")
-        cmd_stitch(args)
-    else:
-        print("\n[3/7] Skipping tracklet stitching")
+    print("\n[3/7] Running tracklet stitching...")
+    cmd_stitch(args)
 
     # Step 4: Filtering
-    if not args.skip_filter:
-        print("\n[4/7] Running temporal filtering...")
-        cmd_filter(args)
-    else:
-        print("\n[4/7] Skipping filtering")
+    print("\n[4/7] Running temporal filtering...")
+    cmd_filter(args)
 
     # Step 5: Feature extraction
-    if not args.skip_features:
-        print("\n[5/7] Extracting features...")
-        cmd_features(args)
-    else:
-        print("\n[5/7] Skipping feature extraction")
+    print("\n[5/7] Extracting features...")
+    cmd_features(args)
 
     # Step 6: Visualization
-    if not args.skip_visualize:
-        print("\n[6/7] Creating labeled video...")
-        cmd_visualize(args)
-    else:
-        print("\n[6/7] Skipping visualization")
+    print("\n[6/7] Creating labeled video...")
+    cmd_visualize(args)
 
     # Step 7: Analysis
-    if not args.skip_analyze and args.parent_dir:
+    if args.parent_dir:
         print("\n[7/7] Running analysis...")
         cmd_analyze(args)
     else:
-        print("\n[7/7] Skipping analysis")
+        print("\n[7/7] Skipping analysis (no parent directory specified)")
 
     print("\n" + "="*60)
     print(" Full pipeline complete!")
@@ -283,7 +268,6 @@ Examples:
     features_parser.add_argument('--video', type=Path, help='Path to video file (single mode)')
     features_parser.add_argument('--pose-h5', type=Path, help='Path to pose H5 file (single mode)')
     features_parser.add_argument('--parent-dir', type=Path, help='Parent directory (batch mode)')
-    features_parser.add_argument('--batch', action='store_true', help='Process all videos in parent directory')
     features_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations Excel file')
     features_parser.add_argument('--visualize', action='store_true', help='Generate feature visualizations')
     features_parser.add_argument('--n-minutes', type=int, help='Only analyze last N minutes')
@@ -315,14 +299,6 @@ Examples:
     full_parser.add_argument('--parent-dir', type=Path, help='Parent directory for analysis stage')
     full_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations')
 
-    # Pipeline control flags
-    full_parser.add_argument('--skip-pose', action='store_true', help='Skip pose estimation')
-    full_parser.add_argument('--skip-id-correction', action='store_true', help='Skip identity correction')
-    full_parser.add_argument('--skip-stitch', action='store_true', help='Skip stitching')
-    full_parser.add_argument('--skip-filter', action='store_true', help='Skip filtering')
-    full_parser.add_argument('--skip-features', action='store_true', help='Skip feature extraction')
-    full_parser.add_argument('--skip-visualize', action='store_true', help='Skip visualization')
-    full_parser.add_argument('--skip-analyze', action='store_true', help='Skip analysis')
 
     # Parameters (use defaults from config)
     full_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE)
@@ -350,32 +326,7 @@ Examples:
     full_parser.add_argument('--force-retrain', action='store_true')
     full_parser.add_argument('--min-silhouette', type=float, default=config.DEFAULT_MIN_SILHOUETTE)
 
-    # Auto-compute paths for full pipeline
-    def setup_full_pipeline_paths(args):
-        """Auto-compute intermediate file paths based on video path."""
-        video_path = Path(args.video)
-        video_stem = video_path.stem.split('DLC')[0]
-        video_dir = video_path.parent
-
-        # Set tracklet pickle path if not provided
-        if not hasattr(args, 'tracklet_pickle') or args.tracklet_pickle is None:
-            args.tracklet_pickle = video_dir / f"{video_stem}DLC*_el.pickle"
-            # Find the actual file if glob pattern
-            matches = list(video_dir.glob(f"{video_stem}*_el.pickle"))
-            if matches:
-                args.tracklet_pickle = matches[0]
-
-        # Set output H5 path if not provided
-        if not hasattr(args, 'output_h5') or args.output_h5 is None:
-            args.output_h5 = video_dir / f"{video_stem}_stitched.h5"
-
-        # Set pose H5 path if not provided
-        if not hasattr(args, 'pose_h5') or args.pose_h5 is None:
-            args.pose_h5 = args.output_h5
-
-        return args
-
-    full_parser.set_defaults(func=lambda args: cmd_full(setup_full_pipeline_paths(args)))
+    full_parser.set_defaults(func=cmd_full)
 
     # Parse arguments
     if len(sys.argv) == 1:
