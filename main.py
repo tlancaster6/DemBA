@@ -95,13 +95,11 @@ def cmd_features(args):
 def cmd_visualize(args):
     """Create labeled video with pose overlays."""
     from demba.visualization import create_labeled_video
-
     print(f"Creating labeled video for: {args.video}")
     create_labeled_video(
         config_path=args.dlc_config.resolve(),
         video_path=args.video.resolve(),
-        shuffle=args.shuffle,
-        filtered=args.filtered
+        shuffle=args.shuffle
     )
     print(" Visualization complete")
 
@@ -117,16 +115,15 @@ def cmd_analyze(args):
         min_likelihood=args.min_likelihood,
         n_minutes=args.n_minutes
     )
-
-    if args.plots == 'all' or 'boxplots' in args.plots:
+    if  'all' in args.plots or 'boxplots' in args.plots:
         print("  Generating boxplots...")
         plotter.generate_clipfeature_boxplots()
 
-    if args.plots == 'all' or 'correlation' in args.plots:
+    if 'all' in args.plots or 'correlation' in args.plots:
         print("  Generating correlation plots...")
         plotter.generate_auto_manual_correlation_plots()
 
-    if args.plots == 'all' or 'heatmaps' in args.plots:
+    if 'all' in args.plots or 'heatmaps' in args.plots:
         print("  Generating heatmaps...")
         plotter.generate_event_timeseries_heatmaps(bin_width_frames=args.bin_width)
 
@@ -279,13 +276,12 @@ Examples:
     viz_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
     viz_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
     viz_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
-    viz_parser.add_argument('--filtered', action='store_true', default=True, help='Use filtered predictions')
     viz_parser.set_defaults(func=cmd_visualize)
 
     # ========== ANALYSIS ==========
     analyze_parser = subparsers.add_parser('analyze', help='Run statistical analysis')
     analyze_parser.add_argument('--parent-dir', required=True, type=Path, help='Parent directory containing Videos and Annotations')
-    analyze_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'], help='Types of plots to generate')
+    analyze_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default='all', help='Types of plots to generate')
     analyze_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM, help='Mouthing distance threshold (mm)')
     analyze_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD, help='Minimum keypoint likelihood')
     analyze_parser.add_argument('--n-minutes', type=int, help='Time restriction in minutes')
@@ -312,7 +308,6 @@ Examples:
     full_parser.add_argument('--bin-width', type=int, default=1800)
     full_parser.add_argument('--force', action='store_true')
     full_parser.add_argument('--visualize', action='store_true')
-    full_parser.add_argument('--filtered', action='store_true', default=True)
     full_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
 
     # ID correction parameters

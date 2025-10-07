@@ -98,6 +98,9 @@ class Plotter:
         plt.close(fig)
 
     def generate_auto_manual_correlation_plots(self):
+        if "n_male_circle_quivers" not in self.clipfeature_df.columns:
+            print('    no manual annotation data found')
+            return
         n_circle_quivers = self.clipfeature_df.n_male_circle_quivers + self.clipfeature_df.n_female_circle_quivers
         circle_quiver_fraction = self.clipfeature_df.male_circle_quivering_fraction + self.clipfeature_df.female_circle_quivering_fraction
 
@@ -116,7 +119,6 @@ class Plotter:
         Parameters:
         - bin_width_frames: Width of each time bin in frames (default: 60, which is 2 seconds at 30fps)
         """
-        import numpy as np
 
         event_columns = ['mouthing_event_id', 'spawning_event_id', 'double_occupancy_event_id']
         event_names = ['Mouthing', 'Spawning', 'Double Occupancy']

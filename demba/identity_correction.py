@@ -812,6 +812,9 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
 
 def reassign_tracklet_ids(tracklets, embeddings, cluster_mapping, output_dir,
                           original_pickle_path, header, min_silhouette=0.2):
+    # Ensure paths are absolute
+    original_pickle_path = Path(original_pickle_path).resolve()
+    output_dir = Path(output_dir).resolve()
     """
     Reassign IDs in tracklets based on cluster assignments and save in original format.
     Backs up original file and replaces it with corrected version.
@@ -909,7 +912,8 @@ def reassign_tracklet_ids(tracklets, embeddings, cluster_mapping, output_dir,
 
     # Create backup of original file with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"{original_pickle_path.stem}_backup_{timestamp}{original_pickle_path.suffix}"
+    # Use shorter backup filename to avoid Windows path length limits
+    backup_filename = f"backup_{timestamp}{original_pickle_path.suffix}"
     backup_path = output_dir / backup_filename
 
     # Copy original to backup location
@@ -1334,22 +1338,17 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
         print(f"{'!'*60}")
         print(f"Found {existing_id_count} detections with assigned IDs (not -1)")
         print(f"This suggests the file may have been previously corrected.")
-        print(f"\nOptions:")
-        print(f"  1. Continue anyway (will re-run ID correction)")
-        print(f"  2. Restore from backup (if available in id_correction folder)")
-        print(f"  3. Abort")
+        print(f"Using existing IDs. If you want to re-run correction, restore from backup first.")
 
         # Check for backups
         backup_files = sorted(output_dir.glob(f"{tracklet_path.stem}_backup_*{tracklet_path.suffix}"))
         if backup_files:
-            print(f"\nFound {len(backup_files)} backup file(s):")
+            print(f"\nBackup files available in: {output_dir}")
             for i, backup in enumerate(backup_files[-3:], 1):  # Show last 3
-                print(f"  {i}. {backup.name}")
+                print(f"  - {backup.name}")
 
-        response = input("\nContinue? (y/n): ").strip().lower()
-        if response != 'y':
-            print("Aborted by user.")
-            return
+        print("Skipping identity correction.")
+        return
 
     print()
 
@@ -1378,9 +1377,7 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
 
         if len(co_occupancy_frames) < 100:
             print("WARNING: Very few co-occupancy frames found. Results may be unreliable.")
-            response = input("Continue anyway? (y/n): ")
-            if response.lower() != 'y':
-                return
+            print("Continuing anyway...")
 
         # Train encoder
         print("\nTraining encoder...")
