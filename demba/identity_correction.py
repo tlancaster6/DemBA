@@ -1229,7 +1229,7 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
         f.write(f"No embedding (ID=-1):       {id_stats['n_no_embedding']:8d} "
                 f"({100*id_stats['n_no_embedding']/total:.1f}%)\n\n")
 
-        f.write(f"Total valid (ID ≠ -1):      {n_valid:8d} "
+        f.write(f"Total valid (ID != -1):      {n_valid:8d} "
                 f"({100*valid_ratio:.1f}%)\n")
         f.write(f"Total invalid (ID = -1):    {n_invalid:8d} "
                 f"({100*invalid_ratio:.1f}%)\n")
