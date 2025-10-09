@@ -11,7 +11,7 @@ from demba.utils.dlc import parse_trial_name
 
 class Plotter:
 
-    def __init__(self, parent_dir, mouthing_dist_mm=10, min_likelihood=0.5, n_minutes=None):
+    def __init__(self, parent_dir, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
         """
         parent_dir should be a directory containing two folders: Videos and Annotations. Annotations should hold a single
         file: Annotations.xlsx. Videos should contain a directory for each video/trial analyzed. Each video/trial
@@ -19,12 +19,21 @@ class Plotter:
         in the parent_dir called "Summary"
 
         Parameters:
-        - mouthing_dist_mm: Mouthing distance threshold in mm (default: 10)
-        - min_likelihood: Minimum likelihood threshold (default: 0.5)
-        - n_minutes: Time restriction in minutes (default: None)
+        - mouthing_dist_mm: Mouthing distance threshold in mm (default: from config)
+        - min_likelihood: Minimum likelihood threshold (default: from config)
+        - n_minutes: Time restriction in minutes (default: from config)
         """
+        from demba import config
         self.parent_dir = Path(parent_dir)
         self.annotation_path = self.parent_dir / 'Annotations' / 'Annotations.xlsx'
+
+        # Load defaults from config
+        if mouthing_dist_mm is None:
+            mouthing_dist_mm = config.DEFAULT_MOUTHING_DIST_MM
+        if min_likelihood is None:
+            min_likelihood = config.DEFAULT_MIN_LIKELIHOOD
+        if n_minutes is None:
+            n_minutes = config.DEFAULT_N_MINUTES
 
         # Create parameter suffix for unique file naming (same as FeatureExtractor)
         self.param_suffix = f"_mdist{mouthing_dist_mm}mm_likelihood{min_likelihood}"

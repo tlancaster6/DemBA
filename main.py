@@ -43,7 +43,8 @@ def cmd_id_correction(args):
         conf_threshold=args.conf_threshold,
         device=args.device,
         force_retrain=args.force_retrain,
-        min_silhouette=args.min_silhouette
+        min_silhouette=args.min_silhouette,
+        frame_stride=args.cache_frame_stride
     )
     print(" Identity correction complete")
 
@@ -94,12 +95,17 @@ def cmd_features(args):
 
 def cmd_visualize(args):
     """Create labeled video with pose overlays."""
-    from demba.visualization import create_labeled_video
+    from demba.visualization import create_labeled_video, create_identity_consistency_grids
     print(f"Creating labeled video for: {args.video}")
     create_labeled_video(
         config_path=args.dlc_config.resolve(),
         video_path=args.video.resolve(),
         shuffle=args.shuffle
+    )
+    print(f"Creating ID consistency grids for {args.video}")
+    create_identity_consistency_grids(
+        tracklet_pickle_path=args.tracklet_pickle.resolve(),
+        video_path=args.video.resolve()
     )
     print(" Visualization complete")
 
@@ -233,15 +239,17 @@ Examples:
     # ========== IDENTITY CORRECTION ==========
     id_parser = subparsers.add_parser('id-correction', help='Run identity correction')
     id_parser.add_argument('--tracklet-pickle', required=True, type=Path, help='Path to *_el.pickle file')
-    id_parser.add_argument('--n-epochs', type=int, default=50, help='Training epochs')
-    id_parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
-    id_parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    id_parser.add_argument('--n-epochs', type=int, default=config.DEFAULT_ID_N_EPOCHS, help='Training epochs')
+    id_parser.add_argument('--batch-size', type=int, default=config.DEFAULT_ID_BATCH_SIZE, help='Batch size')
+    id_parser.add_argument('--lr', type=float, default=config.DEFAULT_ID_LEARNING_RATE, help='Learning rate')
     id_parser.add_argument('--patch-size', type=int, default=config.DEFAULT_PATCH_SIZE, help='Patch size')
     id_parser.add_argument('--padding', type=int, default=config.DEFAULT_PADDING, help='Padding around keypoints')
     id_parser.add_argument('--conf-threshold', type=float, default=config.DEFAULT_CONF_THRESHOLD, help='Confidence threshold')
-    id_parser.add_argument('--device', choices=['cuda', 'cpu'], default='cuda', help='Device to use')
+    id_parser.add_argument('--device', choices=['cuda', 'cpu'], default=config.DEFAULT_ID_DEVICE, help='Device to use')
     id_parser.add_argument('--force-retrain', action='store_true', help='Force model retraining')
     id_parser.add_argument('--min-silhouette', type=float, default=config.DEFAULT_MIN_SILHOUETTE, help='Minimum silhouette score')
+    id_parser.add_argument('--cache-frame-stride', type=int, default=config.DEFAULT_ID_CACHE_FRAME_STRIDE,
+                          help='Sample every Nth frame for patch cache (higher = less memory, default: 5)')
     id_parser.set_defaults(func=cmd_id_correction)
 
     # ========== TRACKLET STITCHING ==========
@@ -267,12 +275,13 @@ Examples:
     features_parser.add_argument('--parent-dir', type=Path, help='Parent directory (batch mode)')
     features_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations Excel file')
     features_parser.add_argument('--visualize', action='store_true', help='Generate feature visualizations')
-    features_parser.add_argument('--n-minutes', type=int, help='Only analyze last N minutes')
+    features_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES, help='Only analyze last N minutes')
     features_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD, help='Minimum keypoint likelihood')
     features_parser.set_defaults(func=cmd_features)
 
     # ========== VISUALIZATION ==========
     viz_parser = subparsers.add_parser('visualize', help='Create labeled video')
+    viz_parser.add_argument('--tracklet-pickle', required=True, type=Path, help='Path to *_el.pickle file')
     viz_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
     viz_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
     viz_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
@@ -284,8 +293,8 @@ Examples:
     analyze_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default='all', help='Types of plots to generate')
     analyze_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM, help='Mouthing distance threshold (mm)')
     analyze_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD, help='Minimum keypoint likelihood')
-    analyze_parser.add_argument('--n-minutes', type=int, help='Time restriction in minutes')
-    analyze_parser.add_argument('--bin-width', type=int, default=1800, help='Bin width in frames for heatmaps')
+    analyze_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES, help='Time restriction in minutes')
+    analyze_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH, help='Bin width in frames for heatmaps')
     analyze_parser.set_defaults(func=cmd_analyze)
 
     # ========== FULL PIPELINE ==========
@@ -303,23 +312,25 @@ Examples:
     full_parser.add_argument('--min-length', type=int, default=config.DEFAULT_MIN_TRACKLET_LENGTH)
     full_parser.add_argument('--animal-names', nargs='+')
     full_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD)
-    full_parser.add_argument('--n-minutes', type=int)
+    full_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES)
     full_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM)
-    full_parser.add_argument('--bin-width', type=int, default=1800)
+    full_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH)
     full_parser.add_argument('--force', action='store_true')
     full_parser.add_argument('--visualize', action='store_true')
     full_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
 
     # ID correction parameters
-    full_parser.add_argument('--n-epochs', type=int, default=50)
-    full_parser.add_argument('--batch-size', type=int, default=32)
-    full_parser.add_argument('--lr', type=float, default=0.001)
+    full_parser.add_argument('--n-epochs', type=int, default=config.DEFAULT_ID_N_EPOCHS)
+    full_parser.add_argument('--batch-size', type=int, default=config.DEFAULT_ID_BATCH_SIZE)
+    full_parser.add_argument('--lr', type=float, default=config.DEFAULT_ID_LEARNING_RATE)
     full_parser.add_argument('--patch-size', type=int, default=config.DEFAULT_PATCH_SIZE)
     full_parser.add_argument('--padding', type=int, default=config.DEFAULT_PADDING)
     full_parser.add_argument('--conf-threshold', type=float, default=config.DEFAULT_CONF_THRESHOLD)
-    full_parser.add_argument('--device', choices=['cuda', 'cpu'], default='cuda')
+    full_parser.add_argument('--device', choices=['cuda', 'cpu'], default=config.DEFAULT_ID_DEVICE)
     full_parser.add_argument('--force-retrain', action='store_true')
     full_parser.add_argument('--min-silhouette', type=float, default=config.DEFAULT_MIN_SILHOUETTE)
+    full_parser.add_argument('--cache-frame-stride', type=int, default=config.DEFAULT_ID_CACHE_FRAME_STRIDE,
+                            help='Sample every Nth frame for patch cache (higher = less memory, default: 5)')
 
     full_parser.set_defaults(func=cmd_full)
 

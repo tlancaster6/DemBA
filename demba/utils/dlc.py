@@ -114,3 +114,56 @@ def parse_trial_name(name):
         if m := re.search(pattern, name):
             return int(m.group(1)), int(is_control)
     return np.nan, np.nan
+
+
+def get_identity_confidence(tracklet):
+    """
+    Calculate confidence in tracklet identity assignment based on mode frequency.
+
+    The identity of a tracklet is determined by the mode of predicted identities
+    across all frames. This function returns the proportion of frames that agree
+    with the mode identity.
+
+    Parameters
+    ----------
+    tracklet : Tracklet
+        Tracklet object with data shape (nframes, nbodyparts, 3 or 4)
+        where the 4th column (if present) contains identity predictions
+
+    Returns
+    -------
+    confidence : float
+        Mode frequency ratio in range [0, 1], where 1.0 means all frames
+        agree on the identity. Returns np.nan if no identity data available.
+
+    Examples
+    --------
+    confidence = 0.85  # 85% of frames agree on the assigned identity
+    confidence = 1.0   # Perfect agreement across all frames
+    confidence = 0.6   # Only 60% agreement - potentially unreliable
+    """
+    # Check if identity data exists (4th column)
+    if tracklet.data.shape[-1] < 4:
+        return np.nan
+
+    # Extract identity predictions: shape (nframes, nbodyparts)
+    identity_data = tracklet.data[..., 3]
+
+    # Flatten and remove NaN values
+    identity_predictions = identity_data.flatten()
+    identity_predictions = identity_predictions[~np.isnan(identity_predictions)]
+
+    # Return NaN if no valid predictions
+    if len(identity_predictions) == 0:
+        return np.nan
+
+    # Get the mode (assigned identity)
+    mode_identity = tracklet.identity
+
+    # Calculate proportion of predictions matching the mode
+    mode_count = np.sum(identity_predictions == mode_identity)
+    total_count = len(identity_predictions)
+
+    confidence = mode_count / total_count
+
+    return confidence

@@ -39,7 +39,7 @@ class FeatureExtractor:
         clipfeatures_df (pd.DataFrame): Aggregated clip-level statistics
     """
 
-    def __init__(self, video_path, quivering_annotation_path=None, pose_h5_path=None, mouthing_dist_mm=10, min_likelihood=0.5, n_minutes=None):
+    def __init__(self, video_path, quivering_annotation_path=None, pose_h5_path=None, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
         """
         Initialize FeatureExtractor with video, pose data, and processing parameters.
 
@@ -47,15 +47,17 @@ class FeatureExtractor:
             video_path (str/Path): Path to .mp4 video file
             quivering_annotation_path (str/Path, optional): Path to Excel file with manual quivering annotations
             pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
-            mouthing_dist_mm (float): Maximum nose-to-genital distance in mm to count as mouthing event
-            min_likelihood (float): Minimum keypoint confidence threshold (0-1) for pose filtering
-            n_minutes (int, optional): If provided, only analyze the last n_minutes of video
+            mouthing_dist_mm (float, optional): Maximum nose-to-genital distance in mm to count as mouthing event (default: from config)
+            min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) for pose filtering (default: from config)
+            n_minutes (int, optional): If provided, only analyze the last n_minutes of video (default: from config)
         """
+        from demba import config
         self.video_path = str(video_path)
-        self.n_minutes = n_minutes # if not None, only analyze the last n_minutes of the video
+        self.n_minutes = n_minutes if n_minutes is not None else config.DEFAULT_N_MINUTES
         self.quivering_annotation_path = None if quivering_annotation_path is None else str(quivering_annotation_path)
         self.file_stem = Path(video_path).stem
-        self.mouthing_dist_mm = mouthing_dist_mm
+        self.mouthing_dist_mm = mouthing_dist_mm if mouthing_dist_mm is not None else config.DEFAULT_MOUTHING_DIST_MM
+        min_likelihood = min_likelihood if min_likelihood is not None else config.DEFAULT_MIN_LIKELIHOOD
 
         # Create parameter suffix for unique file naming
         self.param_suffix = f"_mdist{mouthing_dist_mm}mm_likelihood{min_likelihood}"
@@ -225,7 +227,7 @@ class FeatureExtractor:
         dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
         return dists
 
-    def _detect_mouthing_events(self, dists=None, eps=5, min_samples=10):
+    def _detect_mouthing_events(self, dists=None, eps=None, min_samples=None):
         """
         Detect mouthing events using temporal clustering of sub-threshold nose-genital distances.
 
@@ -234,12 +236,18 @@ class FeatureExtractor:
 
         Args:
             dists (pd.Series, optional): Pre-computed interaction distances. If None, computes them.
-            eps (int): Maximum gap in frames to consider same event (DBSCAN epsilon)
-            min_samples (int): Minimum frames required to qualify as event
+            eps (int, optional): Maximum gap in frames to consider same event (DBSCAN epsilon) (default: from config)
+            min_samples (int, optional): Minimum frames required to qualify as event (default: from config)
 
         Returns:
             pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='mouthing_event_id'
         """
+        from demba import config
+        if eps is None:
+            eps = config.DEFAULT_MOUTHING_EPS
+        if min_samples is None:
+            min_samples = config.DEFAULT_MOUTHING_MIN_SAMPLES
+
         subthresh_frames = dists.loc[dists < self.mouthing_dist_pixels].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
         event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
@@ -251,7 +259,7 @@ class FeatureExtractor:
         event_ids.name = 'mouthing_event_id'
         return event_ids
 
-    def _detect_double_occupancy_events(self, eps=30, min_samples=30):
+    def _detect_double_occupancy_events(self, eps=None, min_samples=None):
         """
         Detect sustained double occupancy of breeding pipe using temporal clustering.
 
@@ -259,12 +267,18 @@ class FeatureExtractor:
         continuous bouts where exactly 2 fish are inside pipe ROI. Fills gaps and requires minimum duration.
 
         Args:
-            eps (int): Maximum gap in frames to consider same event (default 30 = 1 second at 30fps)
-            min_samples (int): Minimum frames required to qualify as event (default 30 = 1 second)
+            eps (int, optional): Maximum gap in frames to consider same event (default: from config)
+            min_samples (int, optional): Minimum frames required to qualify as event (default: from config)
 
         Returns:
             pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='double_occupancy_event_id'
         """
+        from demba import config
+        if eps is None:
+            eps = config.DEFAULT_DOUBLE_OCCUPANCY_EPS
+        if min_samples is None:
+            min_samples = config.DEFAULT_DOUBLE_OCCUPANCY_MIN_SAMPLES
+
         nfish_pipe = self._calc_nfish_pipe()
         double_occupancy_frames = nfish_pipe[nfish_pipe == 2].index.values
         labels = DBSCAN1D(eps, min_samples).fit_predict(double_occupancy_frames)
@@ -277,7 +291,7 @@ class FeatureExtractor:
         event_ids.name = 'double_occupancy_event_id'
         return event_ids
 
-    def _detect_spawning_events(self, mouthing_event_ids=None, eps=300, min_samples=6):
+    def _detect_spawning_events(self, mouthing_event_ids=None, eps=None, min_samples=None):
         """
         Detect spawning events as clusters of mouthing events in temporal proximity.
 
@@ -286,12 +300,18 @@ class FeatureExtractor:
 
         Args:
             mouthing_event_ids (pd.Series, optional): Pre-computed mouthing events. If None, computes them.
-            eps (int): Maximum gap in frames between mouthing events in same spawning bout (default 300 = 10s)
-            min_samples (int): Minimum mouthing event endpoints required to qualify as spawning
+            eps (int, optional): Maximum gap in frames between mouthing events in same spawning bout (default: from config)
+            min_samples (int, optional): Minimum mouthing event endpoints required to qualify as spawning (default: from config)
 
         Returns:
             pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='spawning_event_id'
         """
+        from demba import config
+        if eps is None:
+            eps = config.DEFAULT_SPAWNING_EPS
+        if min_samples is None:
+            min_samples = config.DEFAULT_SPAWNING_MIN_SAMPLES
+
         if mouthing_event_ids is None:
             mouthing_event_ids = self._detect_mouthing_events()
         mouthing_event_start_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').first().loc[0:]['index'].values
@@ -861,7 +881,7 @@ def concat_clipfeature_csvs(parent_dir):
     df.to_csv(str(parent_dir / 'collated_clipfeatures.csv'))
     pd.concat(rows, axis=0)
 
-def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False, n_minutes=None, min_likelihood=0.5):
+def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False, n_minutes=None, min_likelihood=None):
     """
     Extract behavioral features from single video file.
 
@@ -873,8 +893,8 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
         quivering_annotation_path (str/Path, optional): Path to Excel file with manual annotations
         pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
         visualize (bool): If True, generate annotated video visualization after extraction
-        n_minutes (int, optional): If provided, only analyze last n_minutes of video
-        min_likelihood (float): Minimum keypoint confidence threshold (0-1)
+        n_minutes (int, optional): If provided, only analyze last n_minutes of video (default: from config)
+        min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) (default: from config)
 
     Saves:
         *_framefeatures.csv, *_clipfeatures.csv, and optionally *_featurevis.mp4
@@ -891,7 +911,7 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
         print(f'generating visualization for {video_path.stem}')
         fe.visualize_features()
 
-def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minutes=None, min_likelihood=0.5):
+def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minutes=None, min_likelihood=None):
     """
     Batch process all videos in directory tree.
 
@@ -902,8 +922,8 @@ def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minute
         parent_dir (str/Path): Root directory containing videos and pose files
         quivering_annotation_path (str/Path): Path to Excel file with manual annotations for all videos
         visualize (bool): If True, generate annotated video visualizations for all videos
-        n_minutes (int, optional): If provided, only analyze last n_minutes of each video
-        min_likelihood (float): Minimum keypoint confidence threshold (0-1)
+        n_minutes (int, optional): If provided, only analyze last n_minutes of each video (default: from config)
+        min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) (default: from config)
 
     Saves:
         Feature CSVs for each video, plus visualizations if requested

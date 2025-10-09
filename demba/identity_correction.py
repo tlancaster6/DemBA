@@ -23,23 +23,27 @@ from demba.utils.dlc import load_tracklets
 class PatchExtractor:
     """Extract RGB patches from video frames based on keypoint locations."""
 
-    def __init__(self, video_path, patch_size=128, padding=10, conf_threshold=0.5):
+    def __init__(self, video_path, patch_size=None, padding=None, conf_threshold=None, min_pts=None):
         """
         Parameters
         ----------
         video_path : str or Path
             Path to video file
-        patch_size : int
-            Target size for patches (square)
-        padding : int
-            Fixed padding width around keypoints in pixels
-        conf_threshold : float
-            Minimum confidence threshold for including keypoints in bbox calculation
+        patch_size : int, optional
+            Target size for patches (square) (default: from config)
+        padding : int, optional
+            Fixed padding width around keypoints in pixels (default: from config)
+        conf_threshold : float, optional
+            Minimum confidence threshold for including keypoints in bbox calculation (default: from config)
+        min_pts: int, optional
+            Minimum number of valid keypoints for performing bbox calculation (default: 5)
         """
+        from demba import config
         self.video_path = Path(video_path)
-        self.patch_size = patch_size
-        self.padding = padding
-        self.conf_threshold = conf_threshold
+        self.patch_size = patch_size if patch_size is not None else config.DEFAULT_PATCH_SIZE
+        self.padding = padding if padding is not None else config.DEFAULT_PADDING
+        self.conf_threshold = conf_threshold if conf_threshold is not None else config.DEFAULT_CONF_THRESHOLD
+        self.min_pts = min_pts if min_pts is not None else config.DEFAULT_MIN_KEYPOINTS
         self.cap = None
 
     def open_video(self):
@@ -70,12 +74,9 @@ class PatchExtractor:
             (min_x, min_y, max_x, max_y) or None if no valid keypoints
         """
         # Filter by confidence and check for NaN
-        valid_mask = (keypoints[:, 2] >= self.conf_threshold) & \
-                     (~np.isnan(keypoints[:, 0])) & \
-                     (~np.isnan(keypoints[:, 1])) & \
-                     (~np.isnan(keypoints[:, 2]))
+        valid_mask = (keypoints[:, 2] >= self.conf_threshold) & ~np.isnan(keypoints[:, 0])
 
-        if not valid_mask.any():
+        if valid_mask.sum() < self.min_pts:
             return None
 
         valid_kpts = keypoints[valid_mask, :2]
@@ -95,6 +96,25 @@ class PatchExtractor:
         max_x = max_x + self.padding
         max_y = max_y + self.padding
 
+        # Ensure that, after padding, the narrower dimension is at least 4x the padding width. Useful in cases where
+        # most keypoints can fall along a single line, and that line happens to be parallel to the x or y axis,
+        # resulting in an overly-narrow crop
+        width = max_x - min_x
+        height = max_y - min_y
+        min_dimension = 4 * self.padding
+
+        if width < min_dimension:
+            # Expand width symmetrically
+            deficit = min_dimension - width
+            min_x = max(0, min_x - deficit / 2)
+            max_x = max_x + deficit / 2
+
+        if height < min_dimension:
+            # Expand height symmetrically
+            deficit = min_dimension - height
+            min_y = max(0, min_y - deficit / 2)
+            max_y = max_y + deficit / 2
+
         return (int(min_x), int(min_y), int(max_x), int(max_y))
 
     def extract_patch(self, frame_idx, keypoints):
@@ -113,6 +133,9 @@ class PatchExtractor:
         patch : ndarray
             RGB patch of shape (patch_size, patch_size, 3) or None if extraction fails
         """
+        # Ensure video is open (for multiprocessing workers)
+        self.open_video()
+
         bbox = self.compute_bbox(keypoints)
         if bbox is None:
             return None
@@ -173,9 +196,17 @@ class CoOccupancyDetector:
         self.tracklets = tracklets
         self.min_conf = min_conf
 
-    def find_co_occupancy_frames(self):
+    def find_co_occupancy_frames(self, min_overlap_frames=10):
         """
         Find all frames where exactly two tracklets overlap.
+
+        Optionally filters to only return tracklet pairs with significant overlap.
+
+        Parameters
+        ----------
+        min_overlap_frames : int
+            Minimum number of co-occupancy frames required for a tracklet pair to be included.
+            Set to 0 to include all co-occupancy frames. Default: 10
 
         Returns
         -------
@@ -187,6 +218,8 @@ class CoOccupancyDetector:
                 - 'idx1': index within tracklet1.inds
                 - 'idx2': index within tracklet2.inds
         """
+        from collections import defaultdict
+
         co_occupancy = []
 
         # Build frame-to-tracklets mapping
@@ -212,13 +245,36 @@ class CoOccupancyDetector:
                     'idx2': local2
                 })
 
+        # Filter by minimum overlap if specified
+        if min_overlap_frames > 0:
+            # Count co-occupancy frames per tracklet pair
+            pair_overlap_counts = defaultdict(int)
+            pair_co_occurrences = defaultdict(list)
+            for co_occ in co_occupancy:
+                t1, t2 = co_occ['tracklet1'], co_occ['tracklet2']
+                pair_key = tuple(sorted([t1, t2]))
+                pair_overlap_counts[pair_key] += 1
+                pair_co_occurrences[pair_key].append(co_occ)
+
+            # Filter to only pairs with significant overlap
+            significant_pairs = {pair for pair, count in pair_overlap_counts.items() if count > min_overlap_frames}
+            filtered_co_occupancy = []
+            for pair in significant_pairs:
+                filtered_co_occupancy.extend(pair_co_occurrences[pair])
+
+            print(f"Co-occupancy filtering: {len(significant_pairs)} tracklet pairs with >{min_overlap_frames} frames of overlap")
+            print(f"  Filtered to {len(filtered_co_occupancy)} co-occupancy frames (from {len(co_occupancy)} total)")
+
+            return filtered_co_occupancy
+
         return co_occupancy
 
 
 class TripletDataset(Dataset):
     """Dataset for triplet loss training."""
 
-    def __init__(self, tracklets, co_occupancy_frames, patch_extractor, samples_per_epoch=1000):
+    def __init__(self, tracklets, co_occupancy_frames, patch_extractor, samples_per_epoch=None,
+                 min_tracklet_length=10, patch_cache=None):
         """
         Parameters
         ----------
@@ -228,25 +284,74 @@ class TripletDataset(Dataset):
             Co-occupancy frame information from CoOccupancyDetector
         patch_extractor : PatchExtractor
             Patch extraction object
-        samples_per_epoch : int
-            Number of triplets to generate per epoch
+        samples_per_epoch : int, optional
+            Number of triplets to generate per epoch (default: from config)
+        min_tracklet_length : int
+            Minimum tracklet length to include in training (default: 10)
+        patch_cache : dict, optional
+            Pre-extracted patch cache mapping (tracklet_idx, local_idx) -> patch array
         """
+        from demba import config
         self.tracklets = tracklets
         self.co_occupancy_frames = co_occupancy_frames
         self.patch_extractor = patch_extractor
-        self.samples_per_epoch = samples_per_epoch
+        self.samples_per_epoch = samples_per_epoch if samples_per_epoch is not None else config.DEFAULT_ID_SAMPLES_PER_EPOCH
+        self.min_tracklet_length = min_tracklet_length
+        self.patch_cache = patch_cache if patch_cache is not None else {}
 
         # Build index for fast lookup
         self._build_tracklet_index()
 
     def _build_tracklet_index(self):
-        """Build index mapping tracklet idx to frame indices."""
+        """Build index mapping tracklet idx to frame indices, filtering out short tracklets."""
         self.tracklet_frame_map = {}
+        n_filtered = 0
         for t_idx, tracklet in enumerate(self.tracklets):
-            self.tracklet_frame_map[t_idx] = {
-                'frames': tracklet.inds,
-                'data': tracklet.data
-            }
+            if len(tracklet) >= self.min_tracklet_length:
+                self.tracklet_frame_map[t_idx] = {
+                    'frames': tracklet.inds,
+                    'data': tracklet.data
+                }
+            else:
+                n_filtered += 1
+
+        if n_filtered > 0:
+            print(f"Filtered out {n_filtered} tracklets shorter than {self.min_tracklet_length} frames from training")
+
+    def _find_nearest_cached_frame(self, tracklet_idx, local_idx):
+        """
+        Find the nearest cached frame index for a tracklet.
+
+        If the exact local_idx is not in cache, search for the nearest cached frame
+        within the same tracklet.
+
+        Parameters
+        ----------
+        tracklet_idx : int
+            Tracklet index
+        local_idx : int
+            Desired local frame index within tracklet
+
+        Returns
+        -------
+        nearest_idx : int or None
+            Nearest cached local frame index, or None if no cached frames found
+        """
+        # Check if exact match is in cache
+        if (tracklet_idx, local_idx) in self.patch_cache:
+            return local_idx
+
+        # Find all cached indices for this tracklet
+        tracklet_length = len(self.tracklets[tracklet_idx])
+        cached_indices = [i for i in range(tracklet_length)
+                         if (tracklet_idx, i) in self.patch_cache]
+
+        if not cached_indices:
+            return None
+
+        # Find nearest index
+        nearest_idx = min(cached_indices, key=lambda i: abs(i - local_idx))
+        return nearest_idx
 
     def __len__(self):
         return self.samples_per_epoch
@@ -275,6 +380,10 @@ class TripletDataset(Dataset):
                 anchor_local_idx = co_occ['idx2']
                 neg_local_idx = co_occ['idx1']
 
+            # Skip if anchor or negative tracklet was filtered out
+            if anchor_t_idx not in self.tracklet_frame_map or neg_t_idx not in self.tracklet_frame_map:
+                continue
+
             anchor_tracklet = self.tracklets[anchor_t_idx]
             anchor_frame = co_occ['frame']
 
@@ -287,20 +396,30 @@ class TripletDataset(Dataset):
             pos_local_idx = np.random.choice(available_frames)
             pos_frame = anchor_tracklet.inds[pos_local_idx]
 
-            # Extract patches
-            anchor_kpts = anchor_tracklet.data[anchor_local_idx]
-            pos_kpts = anchor_tracklet.data[pos_local_idx]
-            neg_kpts = self.tracklets[neg_t_idx].data[neg_local_idx]
+            # Extract patches (from cache if available, otherwise find nearest cached frame)
+            # For sparse cache, prefer nearest cached frame over on-the-fly extraction
+            anchor_nearest_idx = self._find_nearest_cached_frame(anchor_t_idx, anchor_local_idx)
+            pos_nearest_idx = self._find_nearest_cached_frame(anchor_t_idx, pos_local_idx)
+            neg_nearest_idx = self._find_nearest_cached_frame(neg_t_idx, neg_local_idx)
 
-            anchor_patch = self.patch_extractor.extract_patch(anchor_frame, anchor_kpts)
-            pos_patch = self.patch_extractor.extract_patch(pos_frame, pos_kpts)
-            neg_patch = self.patch_extractor.extract_patch(co_occ['frame'], neg_kpts)
+            # Skip if we can't find cached patches for all three
+            if anchor_nearest_idx is None or pos_nearest_idx is None or neg_nearest_idx is None:
+                continue
+
+            # Skip if anchor and positive map to the same cached frame (violates triplet requirement)
+            if anchor_nearest_idx == pos_nearest_idx:
+                continue
+
+            anchor_patch = self.patch_cache[(anchor_t_idx, anchor_nearest_idx)]
+            pos_patch = self.patch_cache[(anchor_t_idx, pos_nearest_idx)]
+            neg_patch = self.patch_cache[(neg_t_idx, neg_nearest_idx)]
 
             if anchor_patch is not None and pos_patch is not None and neg_patch is not None:
-                # Convert to tensors and normalize
-                anchor_tensor = self._preprocess(anchor_patch)
-                pos_tensor = self._preprocess(pos_patch)
-                neg_tensor = self._preprocess(neg_patch)
+                # Convert to tensors and normalize with augmentation
+                # Each sample gets independent augmentation for better generalization
+                anchor_tensor = self._preprocess(anchor_patch, augment=True)
+                pos_tensor = self._preprocess(pos_patch, augment=True)
+                neg_tensor = self._preprocess(neg_patch, augment=True)
 
                 return anchor_tensor, pos_tensor, neg_tensor
 
@@ -308,21 +427,46 @@ class TripletDataset(Dataset):
         empty = torch.zeros((3, self.patch_extractor.patch_size, self.patch_extractor.patch_size))
         return empty, empty, empty
 
-    def _preprocess(self, patch):
-        """Convert patch to tensor and normalize."""
+    def _preprocess(self, patch, augment=True):
+        """Convert patch to tensor and normalize with optional augmentation.
+
+        Parameters
+        ----------
+        patch : ndarray
+            RGB patch of shape (H, W, 3)
+        augment : bool
+            Whether to apply data augmentation (default: True)
+
+        Returns
+        -------
+        patch_tensor : torch.Tensor
+            Normalized tensor of shape (3, H, W)
+        """
         # Convert BGR to RGB
         patch_rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
         # Normalize to [0, 1]
         patch_norm = patch_rgb.astype(np.float32) / 255.0
         # Convert to CHW format
         patch_tensor = torch.from_numpy(patch_norm).permute(2, 0, 1)
+
+        # Apply augmentation during training
+        if augment:
+            # Random rotation in 90-degree increments (0, 90, 180, 270 degrees)
+            k = np.random.randint(0, 4)  # Number of 90-degree rotations
+            if k > 0:
+                # torch.rot90 rotates in the plane of the last two dimensions
+                patch_tensor = torch.rot90(patch_tensor, k=k, dims=[1, 2])
+
         return patch_tensor
 
 
 class SimpleCNN(nn.Module):
     """Simple CNN encoder for embedding extraction."""
 
-    def __init__(self, embedding_dim=128):
+    def __init__(self, embedding_dim=None):
+        from demba import config
+        if embedding_dim is None:
+            embedding_dim = config.DEFAULT_ID_EMBEDDING_DIM
         super(SimpleCNN, self).__init__()
 
         self.features = nn.Sequential(
@@ -370,7 +514,10 @@ class SimpleCNN(nn.Module):
 class TripletLoss(nn.Module):
     """Triplet loss with margin."""
 
-    def __init__(self, margin=1.0):
+    def __init__(self, margin=None):
+        from demba import config
+        if margin is None:
+            margin = config.DEFAULT_ID_TRIPLET_MARGIN
         super(TripletLoss, self).__init__()
         self.margin = margin
 
@@ -381,8 +528,114 @@ class TripletLoss(nn.Module):
         return loss.mean()
 
 
+def build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_path, frame_stride=None):
+    """
+    Pre-extract and cache patches for all detections needed during training.
+
+    Saves cache to disk as a pickle file. If cache file already exists, loads from disk.
+
+    Caches patches for:
+    1. All detections in co-occupancy frames (anchor/negative candidates)
+    2. All detections in tracklets that appear in co-occupancy frames (positive candidates)
+
+    Parameters
+    ----------
+    tracklets : list of Tracklet
+        List of tracklet objects
+    co_occupancy_frames : list of dict
+        Co-occupancy frame information
+    patch_extractor : PatchExtractor
+        Patch extraction object
+    cache_path : Path or str
+        Path to save/load cache file
+    frame_stride : int, optional
+        Sample every Nth frame from tracklets (default: from config)
+        Higher values reduce cache size but may reduce training diversity
+
+    Returns
+    -------
+    patch_cache : dict
+        Dictionary mapping (tracklet_idx, local_idx) -> patch array (uint8)
+    """
+    import pickle
+    from pathlib import Path
+
+    from demba import config
+    cache_path = Path(cache_path)
+
+    if frame_stride is None:
+        frame_stride = config.DEFAULT_ID_CACHE_FRAME_STRIDE
+
+    # Load from disk if exists
+    if cache_path.exists():
+        print(f"Loading patch cache from {cache_path}...")
+        with open(cache_path, 'rb') as f:
+            patch_cache = pickle.load(f)
+        print(f"Loaded {len(patch_cache)} patches from cache")
+        return patch_cache
+
+    # Build cache
+    print(f"Building patch cache (frame_stride={frame_stride})...")
+    patch_extractor.open_video()
+
+    # Collect all (tracklet_idx, local_idx) pairs we need
+    # Cache frames from tracklets involved in the provided co-occupancy frames, sampled with stride
+    tracklets_in_co_occ = set()
+    for co_occ in co_occupancy_frames:
+        tracklets_in_co_occ.add(co_occ['tracklet1'])
+        tracklets_in_co_occ.add(co_occ['tracklet2'])
+
+    needed_patches = set()
+    for t_idx in tracklets_in_co_occ:
+        tracklet = tracklets[t_idx]
+        # Sample every frame_stride frames
+        for local_idx in range(0, len(tracklet), frame_stride):
+            needed_patches.add((t_idx, local_idx))
+
+    # Calculate percentage of all possible patches
+    total_possible_patches = sum(len(tracklet) for tracklet in tracklets)
+    cache_percentage = (len(needed_patches) / total_possible_patches) * 100
+    print(f"Extracting {len(needed_patches)} unique patches ({cache_percentage:.1f}% of all {total_possible_patches} possible patches)...")
+
+    # Extract all patches
+    patch_cache = {}
+    failed_count = 0
+
+    for t_idx, local_idx in tqdm(needed_patches, desc="Caching patches"):
+        tracklet = tracklets[t_idx]
+        frame = tracklet.inds[local_idx]
+        keypoints = tracklet.data[local_idx]
+
+        patch = patch_extractor.extract_patch(frame, keypoints)
+        if patch is not None:
+            patch_cache[(t_idx, local_idx)] = patch
+        else:
+            failed_count += 1
+
+    patch_extractor.close_video()
+
+    # Calculate cache size
+    if patch_cache:
+        sample_patch = next(iter(patch_cache.values()))
+        bytes_per_patch = sample_patch.nbytes
+        total_mb = (len(patch_cache) * bytes_per_patch) / (1024**2)
+        print(f"Cache built: {len(patch_cache)} patches, {total_mb:.1f} MB")
+        if failed_count > 0:
+            print(f"  ({failed_count} patches failed to extract)")
+
+    # Save to disk
+    print(f"Saving cache to {cache_path}...")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, 'wb') as f:
+        pickle.dump(patch_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"Cache saved ({cache_path.stat().st_size / (1024**2):.1f} MB on disk)")
+
+    return patch_cache
+
+
 def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
-                 n_epochs=50, batch_size=32, lr=0.001, device='cuda'):
+                 n_epochs=150, batch_size=32, lr=0.001, device='cuda', min_tracklet_length=10,
+                 frame_stride=None):
     """
     Train CNN encoder with triplet loss.
 
@@ -404,6 +657,10 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
         Learning rate
     device : str
         'cuda' or 'cpu'
+    min_tracklet_length : int
+        Minimum tracklet length to include in training (default: 10)
+    frame_stride : int, optional
+        Sample every Nth frame for patch cache (default: from config)
 
     Returns
     -------
@@ -416,16 +673,33 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     criterion = TripletLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    dataset = TripletDataset(tracklets, co_occupancy_frames, patch_extractor,
-                            samples_per_epoch=1000)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    # Learning rate scheduler - reduces LR when loss plateaus
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
+    )
 
-    # Open video
-    patch_extractor.open_video()
+    # Build patch cache to speed up training
+    cache_path = output_dir / "patch_cache.pkl"
+    patch_cache = build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_path,
+                                   frame_stride=frame_stride)
+
+    dataset = TripletDataset(tracklets, co_occupancy_frames, patch_extractor,
+                            samples_per_epoch=None, min_tracklet_length=min_tracklet_length,
+                            patch_cache=patch_cache)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True,
+                            persistent_workers=True)
 
     # Training loop
     model.train()
     losses = []
+    learning_rates = []
+
+    # Early stopping parameters
+    best_loss = float('inf')
+    best_model_state = None
+    patience_counter = 0
+    early_stop_patience = 10  # Stop if no improvement for 10 epochs
+    min_delta = 1e-4  # Minimum change to qualify as improvement
 
     for epoch in range(n_epochs):
         epoch_losses = []
@@ -455,24 +729,64 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
 
         avg_loss = np.mean(epoch_losses) if epoch_losses else 0
         losses.append(avg_loss)
-        print(f"Epoch {epoch+1}/{n_epochs}, Loss: {avg_loss:.4f}")
 
-    # Close video
-    patch_extractor.close_video()
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        learning_rates.append(current_lr)
+
+        print(f"Epoch {epoch+1}/{n_epochs}, Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+
+        # Step the scheduler
+        scheduler.step(avg_loss)
+
+        # Early stopping check
+        if avg_loss < best_loss - min_delta:
+            # Significant improvement
+            best_loss = avg_loss
+            best_model_state = model.state_dict().copy()
+            patience_counter = 0
+            print(f"  New best loss: {best_loss:.4f}")
+        else:
+            # No improvement
+            patience_counter += 1
+            print(f"  No improvement for {patience_counter} epoch(s)")
+
+            if patience_counter >= early_stop_patience:
+                print(f"\nEarly stopping triggered after {epoch+1} epochs")
+                print(f"Best loss: {best_loss:.4f}")
+                # Restore best model
+                if best_model_state is not None:
+                    model.load_state_dict(best_model_state)
+                    print("Restored best model weights")
+                break
+
+    # Video handles are managed by worker processes and will be cleaned up automatically
 
     # Save model
     model_path = output_dir / 'encoder_model.pth'
     torch.save(model.state_dict(), model_path)
     print(f"Model saved to {model_path}")
 
-    # Plot loss curve
-    plt.figure(figsize=(10, 6))
-    plt.plot(losses)
-    plt.xlabel('Epoch')
-    plt.ylabel('Triplet Loss')
-    plt.title('Training Loss')
-    plt.grid(True)
-    plt.savefig(output_dir / 'training_loss.png')
+    # Plot loss curve and learning rate
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+
+    # Loss plot
+    ax1.plot(losses, 'b-', linewidth=2)
+    ax1.set_xlabel('Epoch', fontsize=12)
+    ax1.set_ylabel('Triplet Loss', fontsize=12)
+    ax1.set_title('Training Loss', fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+
+    # Learning rate plot
+    ax2.plot(learning_rates, 'r-', linewidth=2)
+    ax2.set_xlabel('Epoch', fontsize=12)
+    ax2.set_ylabel('Learning Rate', fontsize=12)
+    ax2.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+    ax2.set_yscale('log')  # Log scale for better visibility
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'training_loss.png', dpi=150)
     plt.close()
 
     return model
@@ -582,7 +896,7 @@ def cluster_and_assign_ids(embeddings, n_clusters=2):
 
 
 def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
-                               n_segments=3, segment_duration_sec=3, fps=30):
+                               n_segments=None, segment_duration_sec=None, fps=None):
     """
     Create a video showing trajectory segments from each cluster for user to map to male/female.
 
@@ -594,18 +908,26 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
         List of tracklet objects
     patch_extractor : PatchExtractor
         Patch extraction object
-    n_segments : int
-        Number of trajectory segments to show per cluster
-    segment_duration_sec : float
-        Duration of each segment in seconds
-    fps : int
-        Frames per second of output video
+    n_segments : int, optional
+        Number of trajectory segments to show per cluster (default: from config)
+    segment_duration_sec : float, optional
+        Duration of each segment in seconds (default: from config)
+    fps : int, optional
+        Frames per second of output video (default: from config)
 
     Returns
     -------
     mapping : dict
         Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
     """
+    from demba import config
+    if n_segments is None:
+        n_segments = config.DEFAULT_ID_N_SEGMENTS
+    if segment_duration_sec is None:
+        segment_duration_sec = config.DEFAULT_ID_SEGMENT_DURATION_SEC
+    if fps is None:
+        fps = config.VIDEO_FPS
+
     # Group embeddings by (tracklet_idx, cluster)
     tracklet_clusters = {}
     for emb in embeddings:
@@ -935,7 +1257,7 @@ def reassign_tracklet_ids(tracklets, embeddings, cluster_mapping, output_dir,
           f"({100 * n_assigned['male'] / total_detections:.1f}%)")
     print(f"  Female (ID=1):      {n_assigned['female']:6d} detections "
           f"({100 * n_assigned['female'] / total_detections:.1f}%)")
-    print(f"  Low confidence:     {n_low_confidence:6d} detections "
+    print(f"  Low confidence (sillhouette < {min_silhouette}:     {n_low_confidence:6d} detections "
           f"({100 * n_low_confidence / total_detections:.1f}%)")
     print(f"  No embedding:       {n_no_embedding:6d} detections "
           f"({100 * n_no_embedding / total_detections:.1f}%)")
@@ -1253,9 +1575,10 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
     print(f"\nSummary statistics saved to: {report_path}")
 
 
-def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
-                          patch_size=128, padding=10, conf_threshold=0.5,
-                          device='cuda', force_retrain=False):
+def prepare_id_correction(tracklet_path, n_epochs=None, batch_size=None, lr=None,
+                          patch_size=None, padding=None, conf_threshold=None,
+                          device=None, force_retrain=False, min_tracklet_length=None,
+                          min_overlap_frames=None, frame_stride=None):
     """
     Prepare ID correction by training model, extracting embeddings, and clustering.
     This function runs all non-interactive steps up to (but not including) the
@@ -1266,21 +1589,29 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
     tracklet_path : str or Path
         Path to *el.pickle tracklet file
     n_epochs : int, optional
-        Number of training epochs (default: 50)
+        Number of training epochs (default: from config)
     batch_size : int, optional
-        Batch size (default: 32)
+        Batch size (default: from config)
     lr : float, optional
-        Learning rate (default: 0.001)
+        Learning rate (default: from config)
     patch_size : int, optional
-        Patch size (default: 128)
+        Patch size (default: from config)
     padding : int, optional
-        Padding around keypoints in pixels (default: 10)
+        Padding around keypoints in pixels (default: from config)
     conf_threshold : float, optional
-        Confidence threshold (default: 0.5)
+        Confidence threshold (default: from config)
     device : str, optional
-        Device to use: cuda or cpu (default: cuda)
+        Device to use: cuda or cpu (default: from config)
     force_retrain : bool, optional
         Force retraining even if model exists (default: False)
+    min_tracklet_length : int, optional
+        Minimum tracklet length to include in training (default: from config)
+    min_overlap_frames : int, optional
+        Minimum number of co-occupancy frames required for a tracklet pair to be included
+        in training. Only tracklet pairs with >min_overlap_frames of overlap are used.
+        Set to 0 to include all co-occupancy frames. (default: from config)
+    frame_stride : int, optional
+        Sample every Nth frame for patch cache (default: from config)
 
     Returns
     -------
@@ -1296,6 +1627,27 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
             - 'video_path': Path to video file
             - 'output_dir': Path to output directory
     """
+    # Load defaults from config
+    from demba import config
+    if n_epochs is None:
+        n_epochs = config.DEFAULT_ID_N_EPOCHS
+    if batch_size is None:
+        batch_size = config.DEFAULT_ID_BATCH_SIZE
+    if lr is None:
+        lr = config.DEFAULT_ID_LEARNING_RATE
+    if patch_size is None:
+        patch_size = config.DEFAULT_PATCH_SIZE
+    if padding is None:
+        padding = config.DEFAULT_PADDING
+    if conf_threshold is None:
+        conf_threshold = config.DEFAULT_CONF_THRESHOLD
+    if device is None:
+        device = config.DEFAULT_ID_DEVICE
+    if min_tracklet_length is None:
+        min_tracklet_length = config.DEFAULT_MIN_TRACKLET_LENGTH
+    if min_overlap_frames is None:
+        min_overlap_frames = config.DEFAULT_MIN_OVERLAP_FRAMES
+
     # Setup paths
     tracklet_path = Path(tracklet_path)
     video_path = tracklet_path.parent / (tracklet_path.stem.split('DLC')[0] + '.mp4')
@@ -1372,8 +1724,8 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
         # Detect co-occupancy frames
         print("Detecting co-occupancy frames...")
         detector = CoOccupancyDetector(tracklets, min_conf=conf_threshold)
-        co_occupancy_frames = detector.find_co_occupancy_frames()
-        print(f"Found {len(co_occupancy_frames)} co-occupancy frames\n")
+        co_occupancy_frames = detector.find_co_occupancy_frames(min_overlap_frames=min_overlap_frames)
+        print(f"Using {len(co_occupancy_frames)} co-occupancy frames for training\n")
 
         if len(co_occupancy_frames) < 100:
             print("WARNING: Very few co-occupancy frames found. Results may be unreliable.")
@@ -1383,7 +1735,8 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
         print("\nTraining encoder...")
         model = train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
                              n_epochs=n_epochs, batch_size=batch_size,
-                             lr=lr, device=device)
+                             lr=lr, device=device, min_tracklet_length=min_tracklet_length,
+                             frame_stride=frame_stride)
 
     # Extract embeddings
     embeddings_path = output_dir / 'embeddings.pkl'
@@ -1427,7 +1780,7 @@ def prepare_id_correction(tracklet_path, n_epochs=50, batch_size=32, lr=0.001,
     return prep_data
 
 
-def complete_id_correction(prep_data, min_silhouette=0.2):
+def complete_id_correction(prep_data, min_silhouette=None):
     """
     Complete ID correction by running the interactive cluster mapping and saving results.
     This function runs the interactive portion that requires user input.
@@ -1446,7 +1799,7 @@ def complete_id_correction(prep_data, min_silhouette=0.2):
             - 'video_path': Path to video file
             - 'output_dir': Path to output directory
     min_silhouette : float, optional
-        Minimum silhouette score to assign ID (default: 0.2).
+        Minimum silhouette score to assign ID (default: from config).
         Range: -1 to 1. Recommended: 0.0 (lenient), 0.2 (moderate), 0.5 (strict)
 
     Returns
@@ -1456,6 +1809,11 @@ def complete_id_correction(prep_data, min_silhouette=0.2):
     id_stats : dict
         ID assignment statistics
     """
+    # Load defaults from config
+    from demba import config
+    if min_silhouette is None:
+        min_silhouette = config.DEFAULT_MIN_SILHOUETTE
+
     # Unpack preparation data
     tracklets = prep_data['tracklets']
     header = prep_data['header']
@@ -1500,9 +1858,10 @@ def complete_id_correction(prep_data, min_silhouette=0.2):
     return corrected_tracklets, id_stats
 
 
-def main(tracklet_path, n_epochs=50, batch_size=32, lr=0.001, patch_size=128,
-         padding=10, conf_threshold=0.5, device='cuda', force_retrain=False,
-         min_silhouette=0.2):
+def main(tracklet_path, n_epochs=None, batch_size=None, lr=None, patch_size=None,
+         padding=None, conf_threshold=None, device=None, force_retrain=False,
+         min_silhouette=None, min_tracklet_length=None, min_overlap_frames=None,
+         frame_stride=None):
     """
     Triplet loss-based ID correction for DeepLabCut tracklets.
 
@@ -1514,24 +1873,32 @@ def main(tracklet_path, n_epochs=50, batch_size=32, lr=0.001, patch_size=128,
     tracklet_path : str or Path
         Path to *el.pickle tracklet file
     n_epochs : int, optional
-        Number of training epochs (default: 50)
+        Number of training epochs (default: from config)
     batch_size : int, optional
-        Batch size (default: 32)
+        Batch size (default: from config)
     lr : float, optional
-        Learning rate (default: 0.001)
+        Learning rate (default: from config)
     patch_size : int, optional
-        Patch size (default: 128)
+        Patch size (default: from config)
     padding : int, optional
-        Padding around keypoints in pixels (default: 10)
+        Padding around keypoints in pixels (default: from config)
     conf_threshold : float, optional
-        Confidence threshold (default: 0.5)
+        Confidence threshold (default: from config)
     device : str, optional
-        Device to use: cuda or cpu (default: cuda)
+        Device to use: cuda or cpu (default: from config)
     force_retrain : bool, optional
         Force retraining even if model exists (default: False)
     min_silhouette : float, optional
-        Minimum silhouette score to assign ID (default: 0.2).
+        Minimum silhouette score to assign ID (default: from config).
         Range: -1 to 1. Recommended: 0.0 (lenient), 0.2 (moderate), 0.5 (strict)
+    min_tracklet_length : int, optional
+        Minimum tracklet length to include in training (default: from config)
+    min_overlap_frames : int, optional
+        Minimum number of co-occupancy frames required for a tracklet pair to be included
+        in training. Only tracklet pairs with >min_overlap_frames of overlap are used.
+        Set to 0 to include all co-occupancy frames. (default: from config)
+    frame_stride : int, optional
+        Sample every Nth frame for patch cache (default: from config)
 
     Returns
     -------
@@ -1550,7 +1917,10 @@ def main(tracklet_path, n_epochs=50, batch_size=32, lr=0.001, patch_size=128,
         padding=padding,
         conf_threshold=conf_threshold,
         device=device,
-        force_retrain=force_retrain
+        force_retrain=force_retrain,
+        min_tracklet_length=min_tracklet_length,
+        min_overlap_frames=min_overlap_frames,
+        frame_stride=frame_stride
     )
 
     if prep_data is None:
