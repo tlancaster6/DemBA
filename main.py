@@ -270,9 +270,8 @@ Examples:
 
     # ========== FEATURE EXTRACTION ==========
     features_parser = subparsers.add_parser('features', help='Extract behavioral features')
-    features_parser.add_argument('--video', type=Path, help='Path to video file (single mode)')
-    features_parser.add_argument('--pose-h5', type=Path, help='Path to pose H5 file (single mode)')
-    features_parser.add_argument('--parent-dir', type=Path, help='Parent directory (batch mode)')
+    features_parser.add_argument('--video', type=Path, help='Path to video file')
+    features_parser.add_argument('--pose-h5', type=Path, help='Path to pose H5 file')
     features_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations Excel file')
     features_parser.add_argument('--visualize', type=bool, default=config.DEFAULT_VISUALIZE_FLAG, help='Generate feature visualizations')
     features_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES, help='Only analyze last N minutes')

@@ -635,7 +635,7 @@ def build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_pat
 
 def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
                  n_epochs=150, batch_size=32, lr=0.001, device='cuda', min_tracklet_length=10,
-                 frame_stride=None):
+                 frame_stride=None, warmup_epochs=5):
     """
     Train CNN encoder with triplet loss.
 
@@ -654,13 +654,15 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     batch_size : int
         Batch size
     lr : float
-        Learning rate
+        Learning rate (target learning rate after warmup)
     device : str
         'cuda' or 'cpu'
     min_tracklet_length : int
         Minimum tracklet length to include in training (default: 10)
     frame_stride : int, optional
         Sample every Nth frame for patch cache (default: from config)
+    warmup_epochs : int, optional
+        Number of epochs for learning rate warmup (default: 5)
 
     Returns
     -------
@@ -671,7 +673,10 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
     model = SimpleCNN().to(device)
     criterion = TripletLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # Start with a small learning rate for warmup
+    initial_lr = lr * 0.1  # Start at 10% of target learning rate
+    optimizer = optim.Adam(model.parameters(), lr=initial_lr)
 
     # Learning rate scheduler - reduces LR when loss plateaus
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -702,6 +707,15 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     min_delta = 1e-4  # Minimum change to qualify as improvement
 
     for epoch in range(n_epochs):
+        # Warmup phase: linearly increase learning rate
+        if epoch < warmup_epochs:
+            # Linear warmup from initial_lr to target lr
+            warmup_factor = (epoch + 1) / warmup_epochs
+            current_warmup_lr = initial_lr + (lr - initial_lr) * warmup_factor
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_warmup_lr
+            print(f"Warmup phase: Epoch {epoch+1}/{warmup_epochs}, LR: {current_warmup_lr:.6f}")
+
         epoch_losses = []
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{n_epochs}")
 
@@ -736,8 +750,9 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
 
         print(f"Epoch {epoch+1}/{n_epochs}, Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
 
-        # Step the scheduler
-        scheduler.step(avg_loss)
+        # Only step the scheduler after warmup is complete
+        if epoch >= warmup_epochs:
+            scheduler.step(avg_loss)
 
         # Early stopping check
         if avg_loss < best_loss - min_delta:
