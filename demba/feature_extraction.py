@@ -885,5 +885,8 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
     fe = FeatureExtractor(video_path, quivering_annotation_path, pose_h5_path, n_minutes=n_minutes, min_likelihood=min_likelihood)
     fe.extract_all_features()
     if visualize:
-        print(f'generating visualization for {video_path.stem}')
-        fe.visualize_features()
+        if list(video_path.parent.glob('*_featurevis.mp4')):
+            print('feature visualization already exists. Skipping')
+        else:
+            print(f'generating visualization for {video_path.stem}')
+            fe.visualize_features()

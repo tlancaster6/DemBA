@@ -15,8 +15,7 @@ from .identity_correction import (
 from .tracklet_stitching import stitch_by_identity
 from .filtering import filter_predictions
 from .feature_extraction import (
-    FeatureExtractor, process_video, process_all,
-    concat_clipfeature_csvs, delete_outputs
+    FeatureExtractor, process_video
 )
 from .analysis import Plotter, trial_sort_key
 from .visualization import create_labeled_video

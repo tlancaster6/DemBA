@@ -8,20 +8,31 @@ by partitioning tracklets by ID before stitching.
 import numpy as np
 from pathlib import Path
 from DeepLabCut.deeplabcut.refine_training_dataset.stitch import TrackletStitcher, Tracklet
-from demba.utils.dlc import load_tracklets
+from demba.utils.dlc import load_tracklets, split_conjoined_tracklets
+from demba.config import (
+    DEFAULT_STITCH_N_TRACKS,
+    DEFAULT_STITCH_MIN_LENGTH,
+    DEFAULT_MIN_CONJOINED_RUN_LENGTH,
+    DEFAULT_SPLIT_CONJOINED
+)
 
 
-def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
-                       min_length=10, animal_names=None):
+def stitch_by_identity(tracklet_pickle_path, output_h5_path,
+                       n_tracks=None,
+                       min_length=None,
+                       animal_names=None,
+                       split_conjoined=None,
+                       min_conjoined_run_length=None):
     """
     Stitch tracklets with strict identity preservation.
 
     Strategy:
     1. Load tracklets with identity labels
-    2. Partition tracklets by dominant identity (0, 1, or -1)
-    3. Stitch each identity group independently
-    4. Assign unidentified tracklets (-1) to closest track
-    5. Write final tracks to H5
+    2. Split conjoined tracklets (tracklets that switch between tracking different fish)
+    3. Partition tracklets by dominant identity (0, 1, or -1)
+    4. Stitch each identity group independently
+    5. Assign unidentified tracklets (-1) to closest track
+    6. Write final tracks to H5
 
     Parameters
     ----------
@@ -29,12 +40,20 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
         Path to tracklet pickle file with identity labels
     output_h5_path : str or Path
         Path for output H5 file
-    n_tracks : int
-        Number of individuals/tracks (should equal number of unique non--1 IDs)
-    min_length : int
-        Minimum tracklet length to include
+    n_tracks : int, optional
+        Number of individuals/tracks (should equal number of unique non--1 IDs).
+        If None, uses DEFAULT_STITCH_N_TRACKS from config.
+    min_length : int, optional
+        Minimum tracklet length to include in stitching.
+        If None, uses DEFAULT_STITCH_MIN_LENGTH from config.
     animal_names : list of str, optional
         Names for individuals. If None, uses ['individual1', 'individual2', ...]
+    split_conjoined : bool, optional
+        Whether to split tracklets that switch between tracking different individuals.
+        If None, uses DEFAULT_SPLIT_CONJOINED from config.
+    min_conjoined_run_length : int, optional
+        Minimum consecutive frames of same ID to count as a "real" identity run
+        when detecting conjoined tracklets. If None, uses DEFAULT_MIN_CONJOINED_RUN_LENGTH from config.
 
     Returns
     -------
@@ -42,10 +61,34 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
         Mapping of identity ID to animal name
     """
 
+    # Apply config defaults
+    if n_tracks is None:
+        n_tracks = DEFAULT_STITCH_N_TRACKS
+    if min_length is None:
+        min_length = DEFAULT_STITCH_MIN_LENGTH
+    if split_conjoined is None:
+        split_conjoined = DEFAULT_SPLIT_CONJOINED
+    if min_conjoined_run_length is None:
+        min_conjoined_run_length = DEFAULT_MIN_CONJOINED_RUN_LENGTH
+
     # Load tracklets
     print(f"Loading tracklets from {tracklet_pickle_path}...")
     tracklets, header = load_tracklets(tracklet_pickle_path)
     print(f"Loaded {len(tracklets)} tracklets")
+
+    # Split conjoined tracklets
+    if split_conjoined:
+        print(f"\nSplitting conjoined tracklets (min_run_length={min_conjoined_run_length})...")
+        tracklets, n_split = split_conjoined_tracklets(
+            tracklets,
+            min_run_length=min_conjoined_run_length,
+            min_tracklet_length=min_length
+        )
+        if n_split > 0:
+            print(f"  Split {n_split} conjoined tracklets")
+            print(f"  Total tracklets after splitting: {len(tracklets)}")
+        else:
+            print(f"  No conjoined tracklets found")
 
     # Partition by identity
     print("\nPartitioning tracklets by identity...")
@@ -105,7 +148,7 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
                 frames_added += len(t)
 
         stitched_tracks[identity] = combined_track
-        print(f"    → Combined {len(identity_tracklets)} tracklets into track with {frames_added:,} frames")
+        print(f"    -> Combined {len(identity_tracklets)} tracklets into track with {frames_added:,} frames")
 
     # Handle unassigned tracklets (ID=-1)
     if tracklets_by_id[-1]:
@@ -125,7 +168,7 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
 
     print(f"\nIdentity to animal name mapping:")
     for identity, name in sorted(id_to_name.items()):
-        print(f"  ID {identity} → {name}")
+        print(f"  ID {identity} -> {name}")
 
     # Write tracks to H5
     print(f"\nWriting tracks to {output_h5_path}...")
@@ -149,7 +192,7 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path, n_tracks=2,
         save_as_csv=True
     )
 
-    print("✓ Identity-preserving stitching complete!")
+    print("Identity-preserving stitching complete!")
 
     return id_to_name
 
