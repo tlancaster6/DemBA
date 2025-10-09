@@ -274,7 +274,7 @@ Examples:
     features_parser.add_argument('--pose-h5', type=Path, help='Path to pose H5 file (single mode)')
     features_parser.add_argument('--parent-dir', type=Path, help='Parent directory (batch mode)')
     features_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations Excel file')
-    features_parser.add_argument('--visualize', action='store_true', help='Generate feature visualizations')
+    features_parser.add_argument('--visualize', type=bool, default=config.DEFAULT_VISUALIZE_FLAG, help='Generate feature visualizations')
     features_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES, help='Only analyze last N minutes')
     features_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD, help='Minimum keypoint likelihood')
     features_parser.set_defaults(func=cmd_features)
@@ -316,7 +316,7 @@ Examples:
     full_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM)
     full_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH)
     full_parser.add_argument('--force', action='store_true')
-    full_parser.add_argument('--visualize', action='store_true')
+    full_parser.add_argument('--visualize', type=bool, default=True)
     full_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
 
     # ID correction parameters

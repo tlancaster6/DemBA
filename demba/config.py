@@ -13,6 +13,7 @@ DEFAULT_TRACK_METHOD = 'ellipse'
 DEFAULT_MOUTHING_DIST_MM = 10  # Nose-to-genital distance threshold for mouthing detection (mm)
 DEFAULT_MIN_LIKELIHOOD = 0.5  # Minimum keypoint confidence threshold
 DEFAULT_N_MINUTES = None  # Time restriction in minutes (None = analyze entire video)
+DEFAULT_VISUALIZE_FLAG = True # whether to create a video visualization of feature extraction outputs
 
 # Default parameters for ID correction
 DEFAULT_PATCH_SIZE = 128

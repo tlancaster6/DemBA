@@ -53,9 +53,6 @@ __all__ = [
     # Feature extraction
     'FeatureExtractor',
     'process_video',
-    'process_all',
-    'concat_clipfeature_csvs',
-    'delete_outputs',
     # Analysis
     'Plotter',
     'trial_sort_key',

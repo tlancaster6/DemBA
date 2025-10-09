@@ -20,7 +20,7 @@ class FeatureExtractor:
     Extracts behavioral features from zebrafish courtship videos with DeepLabCut pose estimation.
 
     Analyzes videos to detect and quantify spawning-related behaviors including mouthing events
-    (nose-to-genital proximity), double occupancy of breeding pipe, and spawning bouts. Integrates
+    (nose-to-stripe4 proximity), double occupancy of breeding pipe, and spawning bouts. Integrates
     optional manual quivering annotations with automated pose-based detections.
 
     Frame-level features track instantaneous behaviors across all frames. Clip-level features
@@ -47,7 +47,7 @@ class FeatureExtractor:
             video_path (str/Path): Path to .mp4 video file
             quivering_annotation_path (str/Path, optional): Path to Excel file with manual quivering annotations
             pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
-            mouthing_dist_mm (float, optional): Maximum nose-to-genital distance in mm to count as mouthing event (default: from config)
+            mouthing_dist_mm (float, optional): Maximum nose-to-stripe4 distance in mm to count as mouthing event (default: from config)
             min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) for pose filtering (default: from config)
             n_minutes (int, optional): If provided, only analyze the last n_minutes of video (default: from config)
         """
@@ -60,7 +60,7 @@ class FeatureExtractor:
         min_likelihood = min_likelihood if min_likelihood is not None else config.DEFAULT_MIN_LIKELIHOOD
 
         # Create parameter suffix for unique file naming
-        self.param_suffix = f"_mdist{mouthing_dist_mm}mm_likelihood{min_likelihood}"
+        self.param_suffix = f"_mdist{self.mouthing_dist_mm}mm_likelihood{min_likelihood}"
         if n_minutes is not None:
             self.param_suffix += f"_last{n_minutes}min"
 
@@ -206,10 +206,10 @@ class FeatureExtractor:
 
     def _calc_interaction_distances(self):
         """
-        Calculate minimum nose-to-genital (stripe4) distance across all individual pairs.
+        Calculate minimum nose-to-stripe4 distance across all individual pairs.
 
-        Mouthing behavior involves male approaching female genital region. Computes Euclidean
-        distance between each individual's nose and every other individual's stripe4 (genital marker).
+        Mouthing behavior involves one fish nibbling the anal fin (near stripe4) of the other. Computes Euclidean
+        distance between each individual's nose and every other individual's stripe4.
         Takes minimum across all directional pairs.
 
         Returns:
@@ -229,7 +229,7 @@ class FeatureExtractor:
 
     def _detect_mouthing_events(self, dists=None, eps=None, min_samples=None):
         """
-        Detect mouthing events using temporal clustering of sub-threshold nose-genital distances.
+        Detect mouthing events using temporal clustering of sub-threshold nose-stripe4 distances.
 
         Uses DBSCAN1D to group nearby frames where distance < mouthing_dist_pixels. Fills gaps
         within events to handle brief tracking failures. Events must span at least min_samples frames.
@@ -858,29 +858,6 @@ class FeatureExtractor:
         df.to_csv(outfile_path, index='event_id')
 
 
-def concat_clipfeature_csvs(parent_dir):
-    """
-    Concatenate all clip-level feature CSVs in directory tree into single collated file.
-
-    Recursively finds all *_clipfeatures.csv files, concatenates them with video names as index,
-    sorts alphabetically, and saves to collated_clipfeatures.csv in parent directory.
-
-    Args:
-        parent_dir (str/Path): Root directory to search for clipfeature CSV files
-
-    Saves:
-        collated_clipfeatures.csv: Combined DataFrame with one row per video
-    """
-    parent_dir = Path(parent_dir)
-    clipfeature_csv_paths = list(parent_dir.glob('**/*_clipfeatures.csv'))
-    rows = []
-    for csv_path in clipfeature_csv_paths:
-        rows.append(pd.read_csv(str(csv_path), index_col=0))
-    df = pd.concat(rows, axis=0)
-    df = df.sort_index()
-    df.to_csv(str(parent_dir / 'collated_clipfeatures.csv'))
-    pd.concat(rows, axis=0)
-
 def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False, n_minutes=None, min_likelihood=None):
     """
     Extract behavioral features from single video file.
@@ -910,61 +887,3 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
     if visualize:
         print(f'generating visualization for {video_path.stem}')
         fe.visualize_features()
-
-def process_all(parent_dir, quivering_annotation_path, visualize=False, n_minutes=None, min_likelihood=None):
-    """
-    Batch process all videos in directory tree.
-
-    Recursively finds all *cropped.mp4 videos, matches them with corresponding pose .h5 files
-    (searches for pattern *cropped*[0-9].h5), and processes each. Handles missing pose files gracefully.
-
-    Args:
-        parent_dir (str/Path): Root directory containing videos and pose files
-        quivering_annotation_path (str/Path): Path to Excel file with manual annotations for all videos
-        visualize (bool): If True, generate annotated video visualizations for all videos
-        n_minutes (int, optional): If provided, only analyze last n_minutes of each video (default: from config)
-        min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) (default: from config)
-
-    Saves:
-        Feature CSVs for each video, plus visualizations if requested
-    """
-    parent_dir = Path(parent_dir)
-    vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
-    for vp in vid_paths:
-        try:
-            pose_h5_path = list(vp.parent.glob(f'{vp.stem}*[0-9].h5'))[0]
-        except IndexError:
-            pose_h5_path = None
-        process_video(vp, quivering_annotation_path, pose_h5_path, visualize=visualize, n_minutes=n_minutes, min_likelihood=min_likelihood)
-    print('all videos processed')
-
-def delete_outputs(parent_dir, keep_pose_data=True):
-    """
-    Clean up generated output files from directory tree.
-
-    Removes feature extraction outputs, visualizations, and optionally pose estimation files.
-    Useful for re-running pipeline with different parameters or freeing disk space.
-
-    Args:
-        parent_dir (str/Path): Root directory to clean
-        keep_pose_data (bool): If True, keep *_full.pickle, *_meta.pickle, and *_full.mp4 pose files.
-                               If False, delete those as well (requires re-running DLC inference)
-
-    Deletes:
-        Always: *_assemblies.pickle, *_el.h5, *_el.pickle, *_filtered.csv, *_filtered.h5,
-                *_labeled.mp4, *_framefeatures.csv, *_clipfeatures.csv, *_featurevis.mp4, *_roi.png
-        If keep_pose_data=False: *_full.pickle, *_meta.pickle, *_full.mp4
-    """
-    parent_dir = Path(parent_dir)
-    vid_paths = list(parent_dir.glob('**/*cropped.mp4'))
-    targets = ['*_assemblies.pickle', '*_el.h5', '*_el.pickle', '*_filtered.csv', '*_filtered.h5', '*_labeled.mp4',
-               '*_framefeatures.csv', '*_clipfeatures.csv', '*_featurevis.mp4', '*_roi.png']
-    if not keep_pose_data:
-        targets.extend(['*_full.pickle', '*_meta.pickle', '*_full.mp4'])
-    for vp in vid_paths:
-        vid_parent = vp.parent
-        for target in targets:
-            if list(vid_parent.glob(target)):
-                list(vid_parent.glob(target))[0].unlink()
-
-
