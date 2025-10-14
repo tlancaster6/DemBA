@@ -18,6 +18,7 @@ from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from demba.utils.dlc import load_tracklets
+from demba import config
 
 
 class PatchExtractor:
@@ -38,7 +39,6 @@ class PatchExtractor:
         min_pts: int, optional
             Minimum number of valid keypoints for performing bbox calculation (default: 5)
         """
-        from demba import config
         self.video_path = Path(video_path)
         self.patch_size = patch_size if patch_size is not None else config.DEFAULT_PATCH_SIZE
         self.padding = padding if padding is not None else config.DEFAULT_PADDING
@@ -291,7 +291,6 @@ class TripletDataset(Dataset):
         patch_cache : dict, optional
             Pre-extracted patch cache mapping (tracklet_idx, local_idx) -> patch array
         """
-        from demba import config
         self.tracklets = tracklets
         self.co_occupancy_frames = co_occupancy_frames
         self.patch_extractor = patch_extractor
@@ -464,7 +463,6 @@ class SimpleCNN(nn.Module):
     """Simple CNN encoder for embedding extraction."""
 
     def __init__(self, embedding_dim=None):
-        from demba import config
         if embedding_dim is None:
             embedding_dim = config.DEFAULT_ID_EMBEDDING_DIM
         super(SimpleCNN, self).__init__()
@@ -515,7 +513,6 @@ class TripletLoss(nn.Module):
     """Triplet loss with margin."""
 
     def __init__(self, margin=None):
-        from demba import config
         if margin is None:
             margin = config.DEFAULT_ID_TRIPLET_MARGIN
         super(TripletLoss, self).__init__()
@@ -560,7 +557,6 @@ def build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_pat
     import pickle
     from pathlib import Path
 
-    from demba import config
     cache_path = Path(cache_path)
 
     if frame_stride is None:
@@ -691,8 +687,12 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     dataset = TripletDataset(tracklets, co_occupancy_frames, patch_extractor,
                             samples_per_epoch=None, min_tracklet_length=min_tracklet_length,
                             patch_cache=patch_cache)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True,
-                            persistent_workers=True)
+
+    # Use num_workers from config (0 on Windows to avoid multiprocessing overhead with DLC imports)
+    num_workers = config.DEFAULT_ID_NUM_WORKERS
+    persistent = num_workers > 0  # Only use persistent workers if we have workers
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                            pin_memory=True, persistent_workers=persistent)
 
     # Training loop
     model.train()
@@ -935,7 +935,6 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
     mapping : dict
         Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
     """
-    from demba import config
     if n_segments is None:
         n_segments = config.DEFAULT_ID_N_SEGMENTS
     if segment_duration_sec is None:
@@ -1642,7 +1641,6 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
             - 'output_dir': Path to output directory
     """
     # Load defaults from config
-    from demba import config
     if n_epochs is None:
         n_epochs = config.DEFAULT_ID_N_EPOCHS
     if batch_size is None:
@@ -1875,7 +1873,6 @@ def assign_corrected_ids(prep_data, cluster_mapping, min_silhouette=None):
         ID assignment statistics
     """
     # Load defaults from config
-    from demba import config
     if min_silhouette is None:
         min_silhouette = config.DEFAULT_MIN_SILHOUETTE
 

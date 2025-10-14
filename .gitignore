@@ -1,8 +1,6 @@
 # Repo Specific
 projects/
 DeepLabCut/
-tests/resources
-!tests/resources/test_clip.mp4
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

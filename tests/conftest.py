@@ -149,32 +149,32 @@ def mock_project_manager(mock_project_structure):
     except ImportError:
         pytest.skip("DeepLabCut not installed")
 
+@pytest.fixture
+def e2e_dlc_config():
+    """Get path to the DLC config for end-to-end testing.
+
+    Returns
+    -------
+    Path
+        Path to tests/demasoni_singlenuc-tucker-2025-09-11/config.yaml
+    """
+    config_path = Path(__file__).parent / "demasoni_singlenuc-tucker-2025-09-11" / "config.yaml"
+    if not config_path.exists():
+        pytest.skip(f"E2E DLC config not found: {config_path}")
+    return config_path
+
 
 @pytest.fixture
-def test_video_path():
-    """Get path to the test video resource.
+def e2e_test_video_dir():
+    """Get path to the test video directory for end-to-end testing.
 
     Returns
     -------
     Path
-        Path to test_clip.mp4 in tests/resources/
+        Path to tests/test_clip/ directory containing BHVE_group9_316800-318599.mp4
     """
-    resources_dir = Path(__file__).parent / "resources"
-    video_path = resources_dir / "test_clip.mp4"
-
+    video_dir = Path(__file__).parent / "BHVE_group9_316800-318599"
+    video_path = video_dir / "BHVE_group9_316800-318599.mp4"
     if not video_path.exists():
-        pytest.skip(f"Test video not found: {video_path}")
-
-    return video_path
-
-
-@pytest.fixture(scope="session")
-def test_resources_dir():
-    """Get path to the test resources directory.
-
-    Returns
-    -------
-    Path
-        Path to tests/resources/ directory
-    """
-    return Path(__file__).parent / "resources"
+        pytest.skip(f"E2E test video not found: {video_path}")
+    return video_dir

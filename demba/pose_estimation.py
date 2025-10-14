@@ -84,5 +84,5 @@ def estimate_pose(trial_manager: TrialManager, n_fish=None, force_rerun=False):
 
     # Mark stage as complete
     trial_manager.mark_stage_complete('pose_estimation')
-    print(f'✓ Pose estimation complete for {video_path.name}')
+    print(f'Pose estimation complete for {video_path.name}')
 

@@ -39,6 +39,7 @@ DEFAULT_ID_SAMPLES_PER_EPOCH = 1000  # Training samples per epoch
 DEFAULT_ID_EMBEDDING_DIM = 128  # CNN embedding dimension
 DEFAULT_ID_TRIPLET_MARGIN = 1.0  # Triplet loss margin
 DEFAULT_ID_CACHE_FRAME_STRIDE = 5  # Sample every Nth frame for patch cache (reduces memory)
+DEFAULT_ID_NUM_WORKERS = 0  # Number of DataLoader worker processes. Set to 0 on Windows to avoid multiprocessing overhead
 
 # Clustering and assignment
 DEFAULT_MIN_SILHOUETTE = 0.2  # Minimum silhouette score for an embedded point to be associated with a specific ID

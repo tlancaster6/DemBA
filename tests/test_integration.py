@@ -217,3 +217,109 @@ class TestMainPyIntegration:
         """Test that get_trial_manager helper exists."""
         from main import get_trial_manager
         assert callable(get_trial_manager)
+
+
+@pytest.mark.slow
+@pytest.mark.e2e
+def test_full_pipeline_end_to_end(e2e_dlc_config, e2e_test_video_dir):
+    """Run the complete DemBA pipeline end-to-end on test video.
+
+    This test runs all pipeline stages on a 60-second test clip:
+    1. Pose estimation
+    2. Identity correction
+    3. Tracklet stitching
+    4. Filtering
+    5. Feature extraction
+    6. Visualization
+
+    All outputs are written to tests/BHVE_group9_316800-318599/ directory.
+    """
+    from argparse import Namespace
+    from main import cmd_full
+    from demba import config
+    import shutil
+
+    # Video filename
+    video_filename = "BHVE_group9_316800-318599.mp4"
+
+    # Mock input() for interactive cluster mapping during ID correction
+    # Returns 'male' for cluster 0, 'female' for cluster 1
+    with patch('builtins.input', side_effect=['male', 'female']):
+        try:
+            # Create args namespace mimicking command-line arguments
+            args = Namespace(
+                video=e2e_test_video_dir / video_filename,
+                dlc_config=e2e_dlc_config,
+                parent_dir=None,  # Skip analysis stage
+                quivering_annotations=None,
+                shuffle=3,  # Match the model we have
+                n_fish=2,
+                n_tracks=2,
+                min_length=config.DEFAULT_MIN_TRACKLET_LENGTH,
+                animal_names=None,
+                min_likelihood=config.DEFAULT_MIN_LIKELIHOOD,
+                n_minutes=None,  # Process full video
+                mouthing_dist_mm=config.DEFAULT_MOUTHING_DIST_MM,
+                bin_width=config.DEFAULT_ANALYSIS_BIN_WIDTH,
+                force=True,  # Force rerun
+                visualize=False,  # Skip video rendering for speed
+                plots=['all'],
+                n_epochs=10,  # Quick training
+                batch_size=config.DEFAULT_ID_BATCH_SIZE,
+                lr=config.DEFAULT_ID_LEARNING_RATE,
+                patch_size=config.DEFAULT_PATCH_SIZE,
+                padding=config.DEFAULT_PADDING,
+                conf_threshold=config.DEFAULT_CONF_THRESHOLD,
+                device='cuda',  # CI-friendly
+                force_retrain=True,
+                min_silhouette=config.DEFAULT_MIN_SILHOUETTE,
+                cache_frame_stride=10,  # Reduce memory usage
+            )
+
+            # Run full pipeline
+            cmd_full(args)
+
+            # Create TrialManager to check expected outputs
+            tm = TrialManager(
+                trial_dir=e2e_test_video_dir,
+                config_path=e2e_dlc_config,
+                shuffle=3,
+                training_fraction=0.95
+            )
+
+            # Assert all expected output files exist
+            assert tm.el_pickle_path().exists(), "Pose estimation pickle not created"
+            assert tm.stitched_h5_path().exists(), "Stitched H5 not created"
+            assert tm.stitched_csv_path().exists(), "Stitched CSV not created"
+            assert tm.filtered_h5_path().exists(), "Filtered H5 not created"
+            assert tm.filtered_csv_path().exists(), "Filtered CSV not created"
+            assert tm.framefeatures_path().exists(), "Frame features not created"
+            assert tm.clipfeatures_path().exists(), "Clip features not created"
+
+            # Check ID correction directory exists
+            assert tm.id_correction_dir().exists(), "ID correction directory not created"
+
+            # Basic sanity checks
+            assert tm.el_pickle_path().stat().st_size > 0, "Pickle file is empty"
+            assert tm.stitched_h5_path().stat().st_size > 0, "Stitched H5 is empty"
+            assert tm.filtered_h5_path().stat().st_size > 0, "Filtered H5 is empty"
+
+            print(f"\nAll pipeline stages completed successfully!")
+            print(f"Output files located in: {e2e_test_video_dir}")
+            input('End to end test complete. Press enter when you are ready to exit testing and delete the output files')
+
+        finally:
+            # Cleanup: Delete all generated files except the original test video
+            print(f"\nCleaning up test outputs...")
+            for item in e2e_test_video_dir.iterdir():
+                if item.name != video_filename:
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                            print(f"  Removed directory: {item.name}")
+                        else:
+                            item.unlink()
+                            print(f"  Removed file: {item.name}")
+                    except Exception as e:
+                        print(f"  Warning: Could not remove {item.name}: {e}")
+            print("Cleanup complete.")
