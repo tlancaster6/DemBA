@@ -3,7 +3,7 @@
 import DeepLabCut.deeplabcut as dlc
 
 
-def filter_predictions(config_path, video_path, shuffle=None):
+def filter_predictions(trial_manager):
     """
     Apply temporal filtering to pose predictions to smooth trajectories and remove outliers.
 
@@ -12,12 +12,9 @@ def filter_predictions(config_path, video_path, shuffle=None):
 
     Parameters
     ----------
-    config_path : str or Path
-        Full path to DeepLabCut config.yaml file
-    video_path : str or Path
-        Full path to video file
-    shuffle : int, optional
-        Integer specifying shuffle index of training dataset (default: from config)
+    trial_manager : TrialManager
+        TrialManager instance for the trial. Used to resolve config, video paths
+        and mark completion status.
 
     Returns
     -------
@@ -29,11 +26,14 @@ def filter_predictions(config_path, video_path, shuffle=None):
     Source: DeepLabCut/post_processing/filtering.py
     """
     from demba import config as demba_config
-    if shuffle is None:
-        shuffle = demba_config.DEFAULT_SHUFFLE
+
+    # Get paths from TrialManager
+    config_path = trial_manager.config_path
+    video_path = trial_manager.video_path()
+    shuffle = trial_manager.shuffle
 
     dlc.filterpredictions(
-        config_path,  # Full path of the config.yaml file
+        str(config_path),  # Full path of the config.yaml file
         str(video_path),  # Full path of the video to filter predictions for
         shuffle=shuffle,  # Integer specifying shuffle index of training dataset
         filtertype=demba_config.DEFAULT_FILTER_TYPE,  # Filter type: 'arima', 'median', or 'spline'
@@ -45,3 +45,6 @@ def filter_predictions(config_path, video_path, shuffle=None):
         save_as_csv=True,  # Save filtered predictions as .csv file
         track_method=demba_config.DEFAULT_TRACK_METHOD  # Tracking method used to generate predictions
     )
+
+    # Mark stage as complete
+    trial_manager.mark_stage_complete('filtering')

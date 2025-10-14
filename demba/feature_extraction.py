@@ -11,13 +11,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dbscan1d.core import DBSCAN1D
 from datetime import timedelta
+import ast
 
 idx = pd.IndexSlice
 from matplotlib.animation import FuncAnimation
 
 class FeatureExtractor:
     """
-    Extracts behavioral features from zebrafish courtship videos with DeepLabCut pose estimation.
+Extracts behavioral features from cichlid courtship videos with DeepLabCut pose estimation.
 
     Analyzes videos to detect and quantify spawning-related behaviors including mouthing events
     (nose-to-stripe4 proximity), double occupancy of breeding pipe, and spawning bouts. Integrates
@@ -39,23 +40,31 @@ class FeatureExtractor:
         clipfeatures_df (pd.DataFrame): Aggregated clip-level statistics
     """
 
-    def __init__(self, video_path, quivering_annotation_path=None, pose_h5_path=None, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
+    def __init__(self, trial_manager, quivering_annotation_path=None, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
         """
         Initialize FeatureExtractor with video, pose data, and processing parameters.
 
         Args:
-            video_path (str/Path): Path to .mp4 video file
+            trial_manager (TrialManager): TrialManager instance for the trial. Used to resolve
+                video and pose H5 paths, and mark completion status.
             quivering_annotation_path (str/Path, optional): Path to Excel file with manual quivering annotations
-            pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
             mouthing_dist_mm (float, optional): Maximum nose-to-stripe4 distance in mm to count as mouthing event (default: from config)
             min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) for pose filtering (default: from config)
             n_minutes (int, optional): If provided, only analyze the last n_minutes of video (default: from config)
         """
         from demba import config
-        self.video_path = str(video_path)
+
+        # Store TrialManager
+        self.trial_manager = trial_manager
+
+        # Get paths from TrialManager
+        self.video_path = str(trial_manager.video_path())
+        self.h5_path = str(trial_manager.filtered_h5_path())
+
+        self.shortform_id = self._get_shortform_id()
         self.n_minutes = n_minutes if n_minutes is not None else config.DEFAULT_N_MINUTES
         self.quivering_annotation_path = None if quivering_annotation_path is None else str(quivering_annotation_path)
-        self.file_stem = Path(video_path).stem
+        self.file_stem = Path(self.video_path).stem
         self.mouthing_dist_mm = mouthing_dist_mm if mouthing_dist_mm is not None else config.DEFAULT_MOUTHING_DIST_MM
         min_likelihood = min_likelihood if min_likelihood is not None else config.DEFAULT_MIN_LIKELIHOOD
 
@@ -64,13 +73,293 @@ class FeatureExtractor:
         if n_minutes is not None:
             self.param_suffix += f"_last{n_minutes}min"
 
-        self.framefeatures_path = str(video_path).replace('.mp4', f'{self.param_suffix}_framefeatures.csv')
-        self.clipfeatures_path = str(video_path).replace('.mp4', f'{self.param_suffix}_clipfeatures.csv')
-        self.h5_path = str(pose_h5_path)
+        self.framefeatures_path = self.video_path.replace('.mp4', f'{self.param_suffix}_framefeatures.csv')
+        self.clipfeatures_path = self.video_path.replace('.mp4', f'{self.param_suffix}_clipfeatures.csv')
+
         self.pose_df, self.individuals, self.bodyparts = load_poses(self.h5_path, min_likelihood=min_likelihood)
         self.quivering_annotation_df = self._load_quivering_annotations()
         self.roi_x, self.roi_y, self.roi_r, self.frame_height, self.frame_width = self._estimate_roi()
         self.mouthing_dist_pixels = self._calc_mouthing_dist_pixels()
+
+        # Initialize feature registries
+        self._init_frame_feature_registry()
+        self._init_clip_feature_registry()
+
+    def _init_frame_feature_registry(self):
+        """
+        Initialize the feature registry with methods, dependencies, and requirements.
+
+        The registry defines:
+        - method: The extraction function to call
+        - depends_on: List of feature names that must be computed first
+        - requires_pose: Whether pose data is needed
+        - requires_annotations: Whether quivering annotations are needed
+        - method_kwargs: Function to build kwargs from previously computed results
+        """
+        self.frame_feature_registry = {
+            # Presence detection features (sex-specific)
+            'male_in_frame': {
+                'method': lambda: self._detect_frame_presence('male'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'female_in_frame': {
+                'method': lambda: self._detect_frame_presence('female'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'male_in_pipe': {
+                'method': lambda: self._detect_pipe_presence('male'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'female_in_pipe': {
+                'method': lambda: self._detect_pipe_presence('female'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # Mouthing distance features (sex-specific)
+            'male_mouthing_dist': {
+                'method': lambda: self._calc_interaction_distances('male'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'female_mouthing_dist': {
+                'method': lambda: self._calc_interaction_distances('female'),
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # Mouthing event features (sex-specific)
+            'male_mouthing_event_id': {
+                'method': lambda dists=None: self._detect_mouthing_events('male', dists=dists),
+                'depends_on': ['male_mouthing_dist'],
+                'requires_pose': True,
+                'requires_annotations': False,
+                'method_kwargs': lambda results: {'dists': results['male_mouthing_dist']}
+            },
+            'female_mouthing_event_id': {
+                'method': lambda dists=None: self._detect_mouthing_events('female', dists=dists),
+                'depends_on': ['female_mouthing_dist'],
+                'requires_pose': True,
+                'requires_annotations': False,
+                'method_kwargs': lambda results: {'dists': results['female_mouthing_dist']}
+            },
+            # Spawning event (combines both sex mouthing events)
+            'spawning_event_id': {
+                'method': self._detect_spawning_events,
+                'depends_on': ['male_mouthing_event_id', 'female_mouthing_event_id'],
+                'requires_pose': True,
+                'requires_annotations': False,
+                'method_kwargs': lambda results: {
+                    'male_mouthing_event_ids': results['male_mouthing_event_id'],
+                    'female_mouthing_event_ids': results['female_mouthing_event_id']
+                }
+            },
+            # Double occupancy event
+            'double_occupancy_event_id': {
+                'method': self._detect_double_occupancy_events,
+                'depends_on': [],
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # Quivering annotations (not sex-split at frame level, already properly named)
+            'male_lead_quiver': {
+                'method': lambda: self._map_quivering_annotations()[0],
+                'depends_on': [],
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'male_circle_quiver': {
+                'method': lambda: self._map_quivering_annotations()[1],
+                'depends_on': [],
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'female_circle_quiver': {
+                'method': lambda: self._map_quivering_annotations()[2],
+                'depends_on': [],
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+        }
+
+    def _init_clip_feature_registry(self):
+        """
+        Initialize the clip-level feature registry with methods and requirements.
+
+        Clip features are aggregations over the entire video (or temporal window).
+        Unlike frame features, they don't have dependencies on each other - they
+        all depend on frame features having been extracted already.
+        """
+        self.clip_feature_registry = {
+            # Quivering annotation features (sex-specific)
+            'male_lead_quivering_fraction': {
+                'method': lambda: self._calc_quivering_fraction('male', lead=True),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'male_circle_quivering_fraction': {
+                'method': lambda: self._calc_quivering_fraction('male', lead=False),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'female_circle_quivering_fraction': {
+                'method': lambda: self._calc_quivering_fraction('female', lead=False),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'n_male_lead_quivers': {
+                'method': lambda: self._calc_n_quivers('male', lead=True),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'n_male_circle_quivers': {
+                'method': lambda: self._calc_n_quivers('male', lead=False),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            'n_female_circle_quivers': {
+                'method': lambda: self._calc_n_quivers('female', lead=False),
+                'requires_pose': False,
+                'requires_annotations': True,
+            },
+            # Mouthing event features (sex-specific)
+            'n_male_mouthing_events': {
+                'method': lambda: self._calc_n_mouthing_events('male'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'n_female_mouthing_events': {
+                'method': lambda: self._calc_n_mouthing_events('female'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'male_mouthing_event_fraction': {
+                'method': lambda: self._calc_mouthing_event_fraction('male'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'female_mouthing_event_fraction': {
+                'method': lambda: self._calc_mouthing_event_fraction('female'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # ROI occupancy features (sex-specific)
+            'male_roi_occupancy_fraction': {
+                'method': lambda: self._calc_roi_occupancy_fraction('male'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'female_roi_occupancy_fraction': {
+                'method': lambda: self._calc_roi_occupancy_fraction('female'),
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # Other pose-based event features
+            'n_double_occupancy_events': {
+                'method': self._calc_n_double_occupancy_events,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'n_spawning_events': {
+                'method': self._calc_n_spawning_events,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'double_occupancy_event_fraction': {
+                'method': self._calc_double_occupancy_event_fraction,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'spawning_event_fraction': {
+                'method': self._calc_spawning_event_fraction,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # ROI metadata
+            'roi_x': {
+                'method': lambda: self.roi_x,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'roi_y': {
+                'method': lambda: self.roi_y,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            'roi_r': {
+                'method': lambda: self.roi_r,
+                'requires_pose': True,
+                'requires_annotations': False,
+            },
+            # Features that require both pose and annotations (sex-specific)
+            'male_mouthing_female_quivering_phi': {
+                'method': lambda: self._calc_mouthing_quivering_phi('male'),
+                'requires_pose': True,
+                'requires_annotations': True,
+            },
+            'female_mouthing_male_quivering_phi': {
+                'method': lambda: self._calc_mouthing_quivering_phi('female'),
+                'requires_pose': True,
+                'requires_annotations': True,
+            },
+            'male_mouthing_female_quivering_jaccard': {
+                'method': lambda: self._calc_mouthing_quivering_jaccard('male'),
+                'requires_pose': True,
+                'requires_annotations': True,
+            },
+            'female_mouthing_male_quivering_jaccard': {
+                'method': lambda: self._calc_mouthing_quivering_jaccard('female'),
+                'requires_pose': True,
+                'requires_annotations': True,
+            },
+        }
+
+    def _topological_sort(self, feature_names):
+        """
+        Sort features by dependencies using depth-first search.
+
+        Automatically includes all required dependencies, even if not explicitly requested.
+
+        Args:
+            feature_names (list): List of feature names to sort
+
+        Returns:
+            list: Features in execution order (dependencies first), including all transitive dependencies
+
+        Raises:
+            ValueError: If circular dependencies are detected
+        """
+        visited = set()
+        visiting = set()  # Track nodes in current DFS path for cycle detection
+        result = []
+
+        def visit(name):
+            if name in visited:
+                return
+            if name in visiting:
+                raise ValueError(f"Circular dependency detected involving feature '{name}'")
+
+            visiting.add(name)
+
+            # Visit ALL dependencies first (not just those in feature_names)
+            for dep in self.frame_feature_registry[name]['depends_on']:
+                visit(dep)
+
+            visiting.remove(name)
+            visited.add(name)
+            result.append(name)
+
+        for name in feature_names:
+            visit(name)
+
+        return result
 
     def load_feature_csvs(self):
         """
@@ -82,76 +371,195 @@ class FeatureExtractor:
         self.framefeatures_df = pd.read_csv(self.framefeatures_path, index_col=0, low_memory=False)
         self.clipfeatures_df = pd.read_csv(self.clipfeatures_path, index_col=0, low_memory=False)
 
-    def extract_all_features(self):
+    def extract_framefeatures(self, features_to_extract=None, verbose=True):
         """
-        Extract all frame-level and clip-level behavioral features from video.
+        Extract frame-level behavioral features from video using feature registry.
 
         Frame-level features (computed per frame):
-            - nfish_frame: Number of individuals with any detected keypoints
-            - nfish_pipe: Number of individuals with stripe1 inside breeding pipe ROI
-            - min_dist_nose_to_stripe4: Minimum distance across all nose-stripe4 pairs (pixels)
-            - mouthing_event_id: Event ID for mouthing bouts (-1 if not mouthing)
-            - spawning_event_id: Event ID for spawning bouts (-1 if not spawning)
-            - double_occupancy_event_id: Event ID for double occupancy bouts (-1 if single/zero)
-            - male_lead_quiver, male_circle_quiver, female_circle_quiver: Event IDs from annotations
+            - male_in_frame, female_in_frame: Boolean presence detection per sex
+            - male_in_pipe, female_in_pipe: Boolean ROI presence per sex
+            - male_mouthing_dist, female_mouthing_dist: Nose-to-stripe4 distances per sex
+            - male_mouthing_event_id, female_mouthing_event_id: Mouthing event IDs per sex
+            - spawning_event_id: Combined spawning events from both sexes
+            - double_occupancy_event_id: Both fish in pipe simultaneously
+            - male_lead_quiver, male_circle_quiver, female_circle_quiver: Quivering event IDs from annotations
 
-        Clip-level features (aggregated over video):
-            - n_mouthing_events, n_spawning_events, n_double_occupancy_events: Event counts
-            - mouthing_event_fraction, spawning_event_fraction, double_occupancy_event_fraction: Time fractions
-            - raw_*_occupancy_fraction: Fraction of frames with 0/1/2/3 fish in pipe
-            - roi_x, roi_y, roi_r: Pipe location and size
-            - n_*_quivers: Count of quivering events by type
-            - *_quivering_fraction: Fraction of time spent quivering
-            - mouthing_quivering_phi, mouthing_quivering_jaccard: Co-occurrence metrics
+        Args:
+            features_to_extract (list, optional): List of feature names to extract. If None, extracts all available features.
+            verbose (bool): If True, print progress messages during extraction
 
-        Saves framefeatures_df to *_framefeatures.csv and clipfeatures_df to *_clipfeatures.csv.
+        Saves framefeatures_df to *_framefeatures.csv.
         """
-        # extract frame-level features
-        framefeatures_df = []
-        if self.pose_df is not None:
-            framefeatures_df.append(self._calc_nfish_frame())
-            framefeatures_df.append(self._calc_nfish_pipe())
-            framefeatures_df.append(self._calc_interaction_distances())
-            framefeatures_df.append(self._detect_mouthing_events(dists=framefeatures_df[-1]))
-            framefeatures_df.append(self._detect_spawning_events(mouthing_event_ids=framefeatures_df[-1]))
-            framefeatures_df.append(self._detect_double_occupancy_events())
-        if self.quivering_annotation_df is not None:
-            male_lead_quiver, male_circle_quiver, female_circle_quiver = self._map_quivering_annotations()
-            framefeatures_df.append(male_lead_quiver)
-            framefeatures_df.append(male_circle_quiver)
-            framefeatures_df.append(female_circle_quiver)
-        framefeatures_df = pd.concat(framefeatures_df, axis=1)
+        # Determine which features to extract
+        if features_to_extract is None:
+            features_to_extract = list(self.frame_feature_registry.keys())
+
+        # Filter based on data availability
+        available_features = []
+        for feature_name in features_to_extract:
+            if feature_name not in self.frame_feature_registry:
+                print(f"Warning: Unknown feature '{feature_name}' requested, skipping")
+                continue
+
+            spec = self.frame_feature_registry[feature_name]
+
+            # Check requirements
+            if spec.get('requires_pose', False) and self.pose_df is None:
+                if verbose:
+                    print(f"Skipping '{feature_name}': requires pose data")
+                continue
+            if spec.get('requires_annotations', False) and self.quivering_annotation_df is None:
+                if verbose:
+                    print(f"Skipping '{feature_name}': requires quivering annotations")
+                continue
+
+            available_features.append(feature_name)
+
+        if verbose:
+            print(f"Extracting {len(available_features)} frame-level features")
+
+        # Topologically sort to respect dependencies
+        execution_order = self._topological_sort(available_features)
+
+        # Execute in order, caching results
+        results = {}
+        for feature_name in execution_order:
+            spec = self.frame_feature_registry[feature_name]
+
+            # Build kwargs from dependencies
+            kwargs = {}
+            if 'method_kwargs' in spec:
+                kwargs = spec['method_kwargs'](results)
+
+            # Execute and cache
+            if verbose:
+                print(f"  - Extracting {feature_name}...")
+            results[feature_name] = spec['method'](**kwargs)
+
+        # Combine into DataFrame
+        framefeatures_df = pd.concat(list(results.values()), axis=1)
+
+        # Apply temporal windowing if needed
         if self.n_minutes is not None:
             n_frames = self.n_minutes * 60 * VIDEO_FPS
             framefeatures_df = framefeatures_df.tail(n_frames)
+            if verbose:
+                print(f"Applied temporal window: last {self.n_minutes} minutes ({n_frames} frames)")
+
         self.framefeatures_df = framefeatures_df
         self.framefeatures_df.to_csv(self.framefeatures_path)
+        if verbose:
+            print(f"Frame features saved to {self.framefeatures_path}")
 
-        # extract clip-level features
+    def extract_clipfeatures(self, verbose=True):
+        """
+        Extract clip-level behavioral features (aggregated over entire video).
+
+        Clip-level features (aggregated over video):
+            - n_male_mouthing_events, n_female_mouthing_events: Event counts per sex
+            - male_mouthing_event_fraction, female_mouthing_event_fraction: Time fractions per sex
+            - male_roi_occupancy_fraction, female_roi_occupancy_fraction: ROI presence fractions per sex
+            - n_spawning_events, n_double_occupancy_events: Event counts
+            - spawning_event_fraction, double_occupancy_event_fraction: Time fractions
+            - roi_x, roi_y, roi_r: Pipe location and size
+            - n_*_quivers: Count of quivering events by type and sex
+            - *_quivering_fraction: Fraction of time spent quivering by type and sex
+            - *_mouthing_*_quivering_phi/jaccard: Co-occurrence metrics by sex
+
+        Args:
+            verbose (bool): If True, print progress messages during extraction
+
+        Saves clipfeatures_df to *_clipfeatures.csv.
+
+        Note: Requires framefeatures to be extracted first.
+        """
+        if not hasattr(self, 'framefeatures_df') or self.framefeatures_df is None:
+            raise ValueError("Frame features must be extracted before clip features. Call extract_framefeatures() first.")
+
+        # Extract clip-level features using registry
+        if verbose:
+            print("Extracting clip-level features...")
+
+        # Filter features based on data availability
+        available_clip_features = []
+        for feature_name, spec in self.clip_feature_registry.items():
+            if spec.get('requires_pose', False) and self.pose_df is None:
+                continue
+            if spec.get('requires_annotations', False) and self.quivering_annotation_df is None:
+                continue
+            available_clip_features.append(feature_name)
+
+        # Execute and collect results
         clipfeatures_series = pd.Series(dtype=float)
-        if self.quivering_annotation_df is not None:
-            clipfeatures_series['male_lead_quivering_fraction'] = self._calc_quivering_fraction("male_lead_quiver")
-            clipfeatures_series['male_circle_quivering_fraction'] = self._calc_quivering_fraction("male_circle_quiver")
-            clipfeatures_series['female_circle_quivering_fraction'] = self._calc_quivering_fraction("female_circle_quiver")
-            clipfeatures_series['n_male_lead_quivers'] = self._calc_n_quivers("male_lead_quiver")
-            clipfeatures_series['n_male_circle_quivers'] = self._calc_n_quivers("male_circle_quiver")
-            clipfeatures_series['n_female_circle_quivers'] = self._calc_n_quivers("female_circle_quiver")
-        if self.pose_df is not None:
-            clipfeatures_series['n_mouthing_events'] = self._calc_n_mouthing_events()
-            clipfeatures_series['n_double_occupancy_events'] = self._calc_n_double_occupancy_events()
-            clipfeatures_series['n_spawning_events'] = self._calc_n_spawning_events()
-            clipfeatures_series['mouthing_event_fraction'] = self._calc_mouthing_event_fraction()
-            clipfeatures_series['double_occupancy_event_fraction'] = self._calc_double_occupancy_event_fraction()
-            clipfeatures_series['spawning_event_fraction'] = self._calc_spawning_event_fraction()
-            clipfeatures_series['nfish_frame_max'] = framefeatures_df.nfish_frame.max()
-            clipfeatures_series['nfish_pipe_max'] = framefeatures_df.nfish_pipe.max()
-            clipfeatures_series['roi_x'], clipfeatures_series['roi_y'], clipfeatures_series['roi_r'] = self.roi_x, self.roi_y, self.roi_r
-            clipfeatures_series = pd.concat([clipfeatures_series, self._calc_roi_occupancy_fractions()])
-        if (self.quivering_annotation_df is not None) and (self.pose_df is not None):
-            clipfeatures_series['mouthing_quivering_phi'] = self._calc_mouthing_quivering_phi()
-            clipfeatures_series['mouthing_quivering_jaccard'] = self._calc_mouthing_quivering_jaccard()
+        for feature_name in available_clip_features:
+            spec = self.clip_feature_registry[feature_name]
+            if verbose:
+                print(f"  - Extracting {feature_name}...")
+            clipfeatures_series[feature_name] = spec['method']()
+
         self.clipfeatures_df = pd.DataFrame(clipfeatures_series, columns=[self.file_stem]).T
         self.clipfeatures_df.to_csv(self.clipfeatures_path)
+        if verbose:
+            print(f"Clip features saved to {self.clipfeatures_path}")
+
+    def extract_all_features(self, features_to_extract=None, verbose=True):
+        """
+        Extract both frame-level and clip-level behavioral features from video.
+
+        This is a convenience method that calls extract_framefeatures() followed by extract_clipfeatures().
+        See those methods for details on what features are extracted.
+
+        Args:
+            features_to_extract (list, optional): List of frame-level feature names to extract. If None, extracts all available.
+            verbose (bool): If True, print progress messages during extraction
+
+        Saves framefeatures_df to *_framefeatures.csv and clipfeatures_df to *_clipfeatures.csv.
+        """
+        self.extract_framefeatures(features_to_extract=features_to_extract, verbose=verbose)
+        self.extract_clipfeatures(verbose=verbose)
+
+        # Mark stage as complete
+        self.trial_manager.mark_stage_complete('feature_extraction')
+
+    def _get_shortform_id(self):
+        """
+        Parse video filename stem to generate shortform ID.
+
+        Extracts split (behave/control) and group number from the video path stem,
+        then formats as shortform ID: D + B/C + group_number
+
+        Examples:
+            - "bgrb_t007_9.25.24_DB11cropped" -> DB11 (shortform found in stem)
+            - "BHVE_group8" -> DB8 (behave group 8)
+            - "CTRL_group12" -> DC12 (control group 12)
+
+        Returns:
+            str: Shortform ID (e.g., "DB11", "DC5")
+        """
+        import re
+
+        stem = Path(self.video_path).stem
+
+        # Check if shortform format (D[B/C][0-9]+) appears anywhere in stem
+        shortform_match = re.search(r'D([BC])(\d+)', stem)
+        if shortform_match:
+            return shortform_match.group(0)  # Return just the matched shortform ID
+
+        # Parse verbose format (BHVE_groupN or CTRL_groupN)
+        verbose_match = re.search(r'(BHVE|CTRL)_group(\d+)', stem)
+        if verbose_match:
+            split_str = verbose_match.group(1)
+            group_num = verbose_match.group(2)
+
+            # Map split string to letter
+            split_letter = 'B' if split_str == 'BHVE' else 'C'
+
+            # Format as shortform ID
+            return f'D{split_letter}{group_num}'
+
+        # If no pattern matched, raise error
+        raise ValueError(f"Could not parse shortform ID from video stem: {stem}")
+
 
     def _load_quivering_annotations(self):
         """
@@ -166,10 +574,8 @@ class FeatureExtractor:
         if self.quivering_annotation_path is None:
             return None
         sheet_names = pd.ExcelFile(self.quivering_annotation_path).sheet_names
-        if self.file_stem in sheet_names:
-            return pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem, skiprows=1)
-        elif self.file_stem.rstrip('cropped') in sheet_names:
-            return pd.read_excel(self.quivering_annotation_path, sheet_name=self.file_stem.rstrip('cropped'), skiprows=1)
+        if self.shortform_id and (self.shortform_id in sheet_names):
+            return pd.read_excel(self.quivering_annotation_path, sheet_name=self.shortform_id, skiprows=1)
         else:
             return None
 
@@ -204,43 +610,78 @@ class FeatureExtractor:
         conversion_factor = (self.roi_r / ROI_RADIUS_MM)
         return self.mouthing_dist_mm * conversion_factor
 
-    def _calc_interaction_distances(self):
+    def _calc_interaction_distances(self, mouthing_sex):
         """
-        Calculate minimum nose-to-stripe4 distance across all individual pairs.
+        Calculate distance from specified sex's nose to the other sex's stripe4.
 
         Mouthing behavior involves one fish nibbling the anal fin (near stripe4) of the other. Computes Euclidean
-        distance between each individual's nose and every other individual's stripe4.
-        Takes minimum across all directional pairs.
+        distance between the mouthing individual's nose and the receiving individual's stripe4.
+
+        Args:
+            mouthing_sex (str): 'male' or 'female' - which sex is doing the mouthing
 
         Returns:
-            pd.Series: Per-frame minimum distance in pixels, name='min_dist_nose_to_stripe4'
+            pd.Series: Per-frame distance in pixels, name='male_mouthing_dist' or 'female_mouthing_dist'
         """
-        candidate_dists = []
-        for id1, id2 in list(permutations(self.individuals, 2)):
-            # Use explicit x,y column selection to avoid column ordering issues
-            nose_coords = self.pose_df.loc[:, (id1, 'nose', ['x', 'y'])].values
-            stripe4_coords = self.pose_df.loc[:, (id2, 'stripe4', ['x', 'y'])].values
-            dists = nose_coords - stripe4_coords
-            candidate_dists.append(np.hypot(dists[:, 0], dists[:, 1]))
-        if not candidate_dists:
-            return pd.Series(data=-1, index=self.pose_df.index, name='min_dist_nose_to_stripe4')
-        dists = pd.Series(np.nanmin(np.vstack(candidate_dists), axis=0), name='min_dist_nose_to_stripe4')
-        return dists
+        # Map sex to individual ID (individual1 = male, individual2 = female)
+        mouther_individual = 'individual1' if mouthing_sex == 'male' else 'individual2'
+        receiver_individual = 'individual2' if mouthing_sex == 'male' else 'individual1'
 
-    def _detect_mouthing_events(self, dists=None, eps=None, min_samples=None):
+        # Use explicit x,y column selection to avoid column ordering issues
+        nose_coords = self.pose_df.loc[:, (mouther_individual, 'nose', ['x', 'y'])].values
+        stripe4_coords = self.pose_df.loc[:, (receiver_individual, 'stripe4', ['x', 'y'])].values
+
+        dists = nose_coords - stripe4_coords
+        dist_series = pd.Series(np.hypot(dists[:, 0], dists[:, 1]),
+                               index=self.pose_df.index,
+                               name=f'{mouthing_sex}_mouthing_dist')
+        return dist_series
+
+    def _cluster_temporal_events(self, candidate_frames, reference_index, event_name, eps, min_samples):
         """
-        Detect mouthing events using temporal clustering of sub-threshold nose-stripe4 distances.
+        Generic temporal clustering helper for detecting behavioral events.
+
+        Uses DBSCAN1D to group temporally proximate frames into events, then fills gaps
+        within each event to handle brief tracking failures.
+
+        Args:
+            candidate_frames (np.ndarray): Frame indices where event condition is met
+            reference_index (pd.Index): Full video frame index for reindexing
+            event_name (str): Name for the resulting event_id series
+            eps (int): Maximum gap in frames to consider same event (DBSCAN epsilon)
+            min_samples (int): Minimum frames required to qualify as event
+
+        Returns:
+            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise)
+        """
+        labels = DBSCAN1D(eps, min_samples).fit_predict(candidate_frames)
+        event_ids = pd.Series(data=labels, index=candidate_frames).reindex(reference_index, fill_value=-1)
+
+        # Fill gaps within each event
+        for eid in event_ids.unique():
+            if eid >= 0:
+                start_idx = event_ids[event_ids == eid].index.min()
+                end_idx = event_ids[event_ids == eid].index.max()
+                event_ids.loc[start_idx:end_idx] = eid
+
+        event_ids.name = event_name
+        return event_ids
+
+    def _detect_mouthing_events(self, sex, dists=None, eps=None, min_samples=None):
+        """
+        Detect mouthing events for a specific sex using temporal clustering of sub-threshold nose-stripe4 distances.
 
         Uses DBSCAN1D to group nearby frames where distance < mouthing_dist_pixels. Fills gaps
         within events to handle brief tracking failures. Events must span at least min_samples frames.
 
         Args:
+            sex (str): 'male' or 'female' - which sex is doing the mouthing
             dists (pd.Series, optional): Pre-computed interaction distances. If None, computes them.
             eps (int, optional): Maximum gap in frames to consider same event (DBSCAN epsilon) (default: from config)
             min_samples (int, optional): Minimum frames required to qualify as event (default: from config)
 
         Returns:
-            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='mouthing_event_id'
+            pd.Series: Per-frame event ID (>=0 during events, -1 otherwise), name='male_mouthing_event_id' or 'female_mouthing_event_id'
         """
         from demba import config
         if eps is None:
@@ -248,23 +689,19 @@ class FeatureExtractor:
         if min_samples is None:
             min_samples = config.DEFAULT_MOUTHING_MIN_SAMPLES
 
+        if dists is None:
+            dists = self._calc_interaction_distances(sex)
+
         subthresh_frames = dists.loc[dists < self.mouthing_dist_pixels].index.values
-        labels = DBSCAN1D(eps, min_samples).fit_predict(subthresh_frames)
-        event_ids = pd.Series(data=labels, index=subthresh_frames).reindex(dists.index, fill_value=-1)
-        for eid in event_ids.unique():
-            if eid >= 0:
-                start_idx = event_ids[event_ids == eid].index.min()
-                end_idx = event_ids[event_ids == eid].index.max()
-                event_ids.loc[start_idx:end_idx] = eid
-        event_ids.name = 'mouthing_event_id'
-        return event_ids
+        event_name = f'{sex}_mouthing_event_id'
+        return self._cluster_temporal_events(subthresh_frames, dists.index, event_name, eps, min_samples)
 
     def _detect_double_occupancy_events(self, eps=None, min_samples=None):
         """
         Detect sustained double occupancy of breeding pipe using temporal clustering.
 
         Both fish entering pipe together is prerequisite for spawning. Uses DBSCAN1D to identify
-        continuous bouts where exactly 2 fish are inside pipe ROI. Fills gaps and requires minimum duration.
+        continuous bouts where both male and female are inside pipe ROI. Fills gaps and requires minimum duration.
 
         Args:
             eps (int, optional): Maximum gap in frames to consider same event (default: from config)
@@ -279,27 +716,26 @@ class FeatureExtractor:
         if min_samples is None:
             min_samples = config.DEFAULT_DOUBLE_OCCUPANCY_MIN_SAMPLES
 
-        nfish_pipe = self._calc_nfish_pipe()
-        double_occupancy_frames = nfish_pipe[nfish_pipe == 2].index.values
-        labels = DBSCAN1D(eps, min_samples).fit_predict(double_occupancy_frames)
-        event_ids = pd.Series(data=labels, index=double_occupancy_frames).reindex(nfish_pipe.index, fill_value=-1)
-        for eid in event_ids.unique():
-            if eid >= 0:
-                start_idx = event_ids[event_ids == eid].index.min()
-                end_idx = event_ids[event_ids == eid].index.max()
-                event_ids.loc[start_idx:end_idx] = eid
-        event_ids.name = 'double_occupancy_event_id'
-        return event_ids
+        # Check presence for both sexes
+        male_in_pipe = self._detect_pipe_presence('male')
+        female_in_pipe = self._detect_pipe_presence('female')
 
-    def _detect_spawning_events(self, mouthing_event_ids=None, eps=None, min_samples=None):
+        # Double occupancy occurs when both are present
+        double_occupancy = male_in_pipe & female_in_pipe
+        double_occupancy_frames = double_occupancy[double_occupancy].index.values
+
+        return self._cluster_temporal_events(double_occupancy_frames, male_in_pipe.index, 'double_occupancy_event_id', eps, min_samples)
+
+    def _detect_spawning_events(self, male_mouthing_event_ids=None, female_mouthing_event_ids=None, eps=None, min_samples=None):
         """
-        Detect spawning events as clusters of mouthing events in temporal proximity.
+        Detect spawning events as clusters of mouthing events (from either sex) in temporal proximity.
 
         Spawning consists of multiple mouthing bouts in quick succession. Uses DBSCAN1D on start/end
-        frames of mouthing events to identify temporal clusters indicating spawning bouts.
+        frames of mouthing events from both sexes to identify temporal clusters indicating spawning bouts.
 
         Args:
-            mouthing_event_ids (pd.Series, optional): Pre-computed mouthing events. If None, computes them.
+            male_mouthing_event_ids (pd.Series, optional): Pre-computed male mouthing events. If None, computes them.
+            female_mouthing_event_ids (pd.Series, optional): Pre-computed female mouthing events. If None, computes them.
             eps (int, optional): Maximum gap in frames between mouthing events in same spawning bout (default: from config)
             min_samples (int, optional): Minimum mouthing event endpoints required to qualify as spawning (default: from config)
 
@@ -312,63 +748,100 @@ class FeatureExtractor:
         if min_samples is None:
             min_samples = config.DEFAULT_SPAWNING_MIN_SAMPLES
 
-        if mouthing_event_ids is None:
-            mouthing_event_ids = self._detect_mouthing_events()
-        mouthing_event_start_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').first().loc[0:]['index'].values
-        mouthing_event_end_frames = mouthing_event_ids.reset_index().groupby('mouthing_event_id').last().loc[0:]['index'].values
-        combined_mouthing_event_frames = np.concatenate((mouthing_event_start_frames, mouthing_event_end_frames))
-        labels = DBSCAN1D(eps, min_samples).fit_predict(combined_mouthing_event_frames)
-        event_ids = pd.Series(data=labels, index=combined_mouthing_event_frames).reindex(mouthing_event_ids.index, fill_value=-1)
-        for eid in event_ids.unique():
-            if eid >= 0:
-                start_idx = event_ids[event_ids == eid].index.min()
-                end_idx = event_ids[event_ids == eid].index.max()
-                event_ids.loc[start_idx:end_idx] = eid
-        event_ids.name = 'spawning_event_id'
-        return event_ids
+        if male_mouthing_event_ids is None:
+            male_mouthing_event_ids = self._detect_mouthing_events('male')
+        if female_mouthing_event_ids is None:
+            female_mouthing_event_ids = self._detect_mouthing_events('female')
 
-    def _calc_nfish_frame(self):
+        # Get start and end frames of each mouthing event for both sexes
+        all_mouthing_frames = []
+
+        # Process male mouthing events
+        male_events = male_mouthing_event_ids[male_mouthing_event_ids >= 0]
+        if len(male_events) > 0:
+            male_start = male_events.reset_index().groupby('male_mouthing_event_id').first()['index'].values
+            male_end = male_events.reset_index().groupby('male_mouthing_event_id').last()['index'].values
+            all_mouthing_frames.extend([male_start, male_end])
+
+        # Process female mouthing events
+        female_events = female_mouthing_event_ids[female_mouthing_event_ids >= 0]
+        if len(female_events) > 0:
+            female_start = female_events.reset_index().groupby('female_mouthing_event_id').first()['index'].values
+            female_end = female_events.reset_index().groupby('female_mouthing_event_id').last()['index'].values
+            all_mouthing_frames.extend([female_start, female_end])
+
+        if not all_mouthing_frames:
+            # No mouthing events found, return empty series
+            return pd.Series(-1, index=male_mouthing_event_ids.index, name='spawning_event_id')
+
+        combined_mouthing_event_frames = np.concatenate(all_mouthing_frames)
+
+        return self._cluster_temporal_events(combined_mouthing_event_frames, male_mouthing_event_ids.index, 'spawning_event_id', eps, min_samples)
+
+    def _detect_frame_presence(self, sex):
         """
-        Count number of individuals detected in frame based on any visible keypoint.
+        Detect whether a specific sex is present in frame based on any visible keypoint.
 
         Individual is considered present if ANY of their bodyparts has valid (non-NaN) pose estimate
-        after likelihood filtering. More permissive than nfish_pipe which requires specific location.
+        after likelihood filtering.
+
+        Args:
+            sex (str): 'male' or 'female'
 
         Returns:
-            pd.Series: Per-frame count of detected individuals, name='nfish_frame'
+            pd.Series: Per-frame boolean indicating presence, name='male_in_frame' or 'female_in_frame'
         """
-        nfish_frame = self.pose_df.groupby('individuals', axis=1).any().sum(axis=1)
-        nfish_frame.name = 'nfish_frame'
-        return nfish_frame
+        # Map sex to individual ID (individual1 = male, individual2 = female)
+        individual = 'individual1' if sex == 'male' else 'individual2'
+        presence = self.pose_df.loc[:, (individual, slice(None), slice(None))].notna().any(axis=1)
+        presence.name = f'{sex}_in_frame'
+        return presence
 
-    def _calc_nfish_pipe(self):
+    def _detect_pipe_presence(self, sex):
         """
-        Count number of individuals inside breeding pipe ROI based on stripe1 position.
+        Detect whether a specific sex is inside breeding pipe ROI based on centroid position.
 
-        Uses stripe1 (mid-body keypoint) to determine if fish is inside circular pipe ROI.
-        Computes Euclidean distance from stripe1 to ROI center and checks if <= roi_r.
-        More conservative than nfish_frame, requires fish to be in specific breeding location.
+        Uses centroid of all valid keypoints to determine if fish is inside circular pipe ROI.
+        Computes Euclidean distance from centroid to ROI center and checks if <= roi_r.
+        More robust than using single keypoint.
 
-        Returns:
-            pd.Series: Per-frame count of individuals inside pipe, name='nfish_pipe'
-        """
-        # Get only x,y coordinates for stripe1 to avoid including likelihood in distance calculation
-        tmp_df = self.pose_df.loc[:, idx[:, 'stripe1', ['x', 'y']]].copy()
-        tmp_df.loc[:, idx[:, :, 'x']] -= self.roi_x
-        tmp_df.loc[:, idx[:, :, 'y']] -= self.roi_y
-        tmp_df = (tmp_df ** 2).groupby('individuals', axis=1).sum(min_count=2) ** 0.5
-        nfish_pipe = (tmp_df <= self.roi_r).sum(axis=1)
-        nfish_pipe.name = 'nfish_pipe'
-        return nfish_pipe
-
-    def _calc_n_mouthing_events(self):
-        """
-        Count total number of distinct mouthing events in video.
+        Args:
+            sex (str): 'male' or 'female'
 
         Returns:
-            int: Number of unique mouthing event IDs
+            pd.Series: Per-frame boolean indicating presence in pipe, name='male_in_pipe' or 'female_in_pipe'
         """
-        event_ids = self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0].mouthing_event_id
+        # Map sex to individual ID (individual1 = male, individual2 = female)
+        individual = 'individual1' if sex == 'male' else 'individual2'
+
+        # Get x,y coordinates for all bodyparts of this individual
+        x_coords = self.pose_df.loc[:, (individual, slice(None), 'x')]
+        y_coords = self.pose_df.loc[:, (individual, slice(None), 'y')]
+
+        # Calculate centroid of valid keypoints (using nanmean to ignore missing data)
+        centroid_x = x_coords.mean(axis=1)
+        centroid_y = y_coords.mean(axis=1)
+
+        # Calculate distance from centroid to ROI center
+        dist_to_roi = np.sqrt((centroid_x - self.roi_x)**2 + (centroid_y - self.roi_y)**2)
+
+        # Check if within ROI radius
+        in_pipe = dist_to_roi <= self.roi_r
+        in_pipe.name = f'{sex}_in_pipe'
+        return in_pipe
+
+    def _calc_n_mouthing_events(self, sex):
+        """
+        Count total number of distinct mouthing events for a specific sex in video.
+
+        Args:
+            sex (str): 'male' or 'female'
+
+        Returns:
+            int: Number of unique mouthing event IDs for that sex
+        """
+        col_name = f'{sex}_mouthing_event_id'
+        event_ids = self.framefeatures_df[self.framefeatures_df[col_name] >= 0][col_name]
         n_events = len(event_ids.unique())
         return n_events
 
@@ -416,94 +889,130 @@ class FeatureExtractor:
         double_occupancy_fraction = n_double_occupancy_frames / len(self.framefeatures_df)
         return double_occupancy_fraction
 
-    def _calc_mouthing_event_fraction(self):
+    def _calc_mouthing_event_fraction(self, sex):
         """
-        Calculate fraction of video time spent in mouthing events.
+        Calculate fraction of video time spent in mouthing events for a specific sex.
+
+        Args:
+            sex (str): 'male' or 'female'
 
         Returns:
-            float: Proportion of frames with mouthing_event_id >= 0 (range 0-1)
+            float: Proportion of frames with mouthing_event_id >= 0 for that sex (range 0-1)
         """
-        n_mouthing_frames = len(self.framefeatures_df[self.framefeatures_df.mouthing_event_id >= 0])
+        col_name = f'{sex}_mouthing_event_id'
+        n_mouthing_frames = len(self.framefeatures_df[self.framefeatures_df[col_name] >= 0])
         mouthing_fraction = n_mouthing_frames / len(self.framefeatures_df)
         return mouthing_fraction
 
-    def _calc_roi_occupancy_fractions(self):
+    def _calc_roi_occupancy_fraction(self, sex):
         """
-        Calculate fraction of time with 0, 1, 2, or 3 fish inside breeding pipe.
+        Calculate fraction of time a specific sex is inside breeding pipe ROI.
+
+        Args:
+            sex (str): 'male' or 'female'
 
         Returns:
-            pd.Series: Fractions for each occupancy level with keys:
-                'raw_zero_occupancy_fraction', 'raw_single_occupancy_fraction',
-                'raw_double_occupancy_fraction', 'raw_triple_occupancy_fraction'
+            float: Fraction of frames where specified sex is in pipe (range 0-1)
         """
-        value_counts = self.framefeatures_df.nfish_pipe.value_counts(normalize=True)
-        value_counts = value_counts.reindex([0, 1, 2, 3], fill_value=0.0)
-        value_counts = value_counts.rename(index={0: 'raw_zero_occupancy_fraction',
-                                                  1: 'raw_single_occupancy_fraction',
-                                                  2: 'raw_double_occupancy_fraction',
-                                                  3: 'raw_triple_occupancy_fraction'})
-        return value_counts
+        col_name = f'{sex}_in_pipe'
+        in_pipe_frames = self.framefeatures_df[col_name].sum()
+        fraction = in_pipe_frames / len(self.framefeatures_df)
+        return fraction
 
-    def _calc_quivering_fraction(self, quivering):
+    def _calc_quivering_fraction(self, sex, lead=False):
         """
         Calculate fraction of video time spent in specified quivering behavior.
 
         Args:
-            quivering (str): Column name ('male_lead_quiver', 'male_circle_quiver', or 'female_circle_quiver')
+            sex (str): 'male' or 'female'
+            lead (bool): If False, calculate circle quivering fraction. If True, calculate lead quivering fraction.
+                        Note: Female lead quivering does not exist.
 
         Returns:
             float: Proportion of frames with quivering event ID >= 0
+
+        Raises:
+            ValueError: If lead=True and sex='female' (invalid combination)
         """
-        n_quivering_frames = len(self.framefeatures_df[self.framefeatures_df[quivering] >= 0])
+        if lead and sex == 'female':
+            raise ValueError("Female lead quivering does not exist")
+
+        if lead:
+            col_name = 'male_lead_quiver'
+        else:
+            col_name = f'{sex}_circle_quiver'
+
+        n_quivering_frames = len(self.framefeatures_df[self.framefeatures_df[col_name] >= 0])
         quivering_fraction = n_quivering_frames / len(self.framefeatures_df)
         return quivering_fraction
 
-    def _calc_n_quivers(self, quivering):
+    def _calc_n_quivers(self, sex, lead=False):
         """
         Count number of distinct quivering events of specified type.
 
         Args:
-            quivering (str): Column name ('male_lead_quiver', 'male_circle_quiver', or 'female_circle_quiver')
+            sex (str): 'male' or 'female'
+            lead (bool): If False, count circle quivering events. If True, count lead quivering events.
+                        Note: Female lead quivering does not exist.
 
         Returns:
             int: Number of unique quivering event IDs
+
+        Raises:
+            ValueError: If lead=True and sex='female' (invalid combination)
         """
-        event_ids = self.framefeatures_df[self.framefeatures_df[quivering] >= 0][quivering]
+        if lead and sex == 'female':
+            raise ValueError("Female lead quivering does not exist")
+
+        if lead:
+            col_name = 'male_lead_quiver'
+        else:
+            col_name = f'{sex}_circle_quiver'
+
+        event_ids = self.framefeatures_df[self.framefeatures_df[col_name] >= 0][col_name]
         n_events = len(event_ids.unique())
         return n_events
 
-    def _calc_mouthing_quivering_phi(self):
+    def _calc_mouthing_quivering_phi(self, mouthing_sex):
         """
-        Calculate Phi coefficient (correlation) between mouthing and quivering behaviors.
+        Calculate Phi coefficient (correlation) between mouthing by one sex and circle quivering by the other.
 
         Measures association between automated mouthing detection and manual quivering annotations.
         Phi coefficient ranges from -1 (perfect negative correlation) to +1 (perfect positive correlation).
 
+        Args:
+            mouthing_sex (str): 'male' or 'female' - which sex is doing the mouthing
+
         Returns:
-            float: Phi coefficient between mouthing and any quivering (male or female circle)
+            float: Phi coefficient between specified sex's mouthing and opposite sex's circle quivering
         """
-        mouthing_events = self.framefeatures_df.mouthing_event_id >= 0
-        male_circle_quivers = self.framefeatures_df.male_circle_quiver >= 0
-        female_circle_quivers = self.framefeatures_df.female_circle_quiver >= 0
-        all_quivers = male_circle_quivers | female_circle_quivers
-        phi = phi_coefficient(mouthing_events, all_quivers)
+        mouthing_col = f'{mouthing_sex}_mouthing_event_id'
+        quiver_col = 'female_circle_quiver' if mouthing_sex == 'male' else 'male_circle_quiver'
+
+        mouthing_events = self.framefeatures_df[mouthing_col] >= 0
+        quivers = self.framefeatures_df[quiver_col] >= 0
+        phi = phi_coefficient(mouthing_events, quivers)
         return phi
 
-    def _calc_mouthing_quivering_jaccard(self):
+    def _calc_mouthing_quivering_jaccard(self, mouthing_sex):
         """
-        Calculate Jaccard index (overlap) between mouthing and quivering behaviors.
+        Calculate Jaccard index (overlap) between mouthing by one sex and circle quivering by the other.
 
         Measures temporal overlap as: (intersection) / (union). Jaccard index ranges from
         0 (no overlap) to 1 (perfect overlap) between mouthing and quivering frames.
 
+        Args:
+            mouthing_sex (str): 'male' or 'female' - which sex is doing the mouthing
+
         Returns:
-            float: Jaccard index between mouthing and any quivering (male or female circle)
+            float: Jaccard index between specified sex's mouthing and opposite sex's circle quivering
         """
-        mouthing_events = self.framefeatures_df.mouthing_event_id >= 0
-        male_circle_quivers = self.framefeatures_df.male_circle_quiver >= 0
-        female_circle_quivers = self.framefeatures_df.female_circle_quiver >= 0
-        all_quivers = male_circle_quivers | female_circle_quivers
-        jaccard = jaccard_index(mouthing_events, all_quivers)
+        mouthing_col = f'{mouthing_sex}_mouthing_event_id'
+        quiver_col = 'female_circle_quiver' if mouthing_sex == 'male' else 'male_circle_quiver'
+
+        mouthing_events = self.framefeatures_df[mouthing_col] >= 0
+        quivers = self.framefeatures_df[quiver_col] >= 0
+        jaccard = jaccard_index(mouthing_events, quivers)
         return jaccard
 
     def _clean_metadata_string(self, meta_str):
@@ -515,9 +1024,15 @@ class FeatureExtractor:
 
         Returns:
             str: Quivering type ('male-lead-quiver', 'male-circle-quiver', or 'female-circle-quiver')
+
+        Raises:
+            ValueError: If metadata string cannot be safely parsed
         """
-        meta_dict = eval(meta_str)
-        return meta_dict["TEMPORAL-SEGMENTS"]
+        try:
+            meta_dict = ast.literal_eval(meta_str)
+            return meta_dict["TEMPORAL-SEGMENTS"]
+        except (ValueError, SyntaxError, KeyError) as e:
+            raise ValueError(f"Failed to parse metadata string: {meta_str}. Error: {e}")
         
     def _map_quivering_annotations(self):
         """
@@ -533,14 +1048,23 @@ class FeatureExtractor:
         """
         ref_df = self.quivering_annotation_df.copy()
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end', 'metadata']]
-        ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * 30).apply(np.round)
-        ref_df["temporal_segment_end"] = (ref_df["temporal_segment_end"]  * 30).apply(np.round)
+        ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * VIDEO_FPS).apply(np.round)
+        ref_df["temporal_segment_end"] = (ref_df["temporal_segment_end"]  * VIDEO_FPS).apply(np.round)
         ref_df["metadata"] = (ref_df["metadata"]).apply(self._clean_metadata_string)
-        male_lead_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='male_lead_quiver')
-        male_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='male_circle_quiver')
-        female_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, 378000), name='female_circle_quiver')
+
+        # Determine max frame from pose data if available, otherwise use a large default
+        if self.pose_df is not None:
+            max_frame_count = len(self.pose_df)
+        else:
+            # Use max annotation time as fallback
+            max_annotation_frame = int(ref_df["temporal_segment_end"].max())
+            max_frame_count = max_annotation_frame + 1000  # Add buffer
+
+        male_lead_quiver = pd.Series(False, index=pd.RangeIndex(0, max_frame_count), name='male_lead_quiver')
+        male_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, max_frame_count), name='male_circle_quiver')
+        female_circle_quiver = pd.Series(False, index=pd.RangeIndex(0, max_frame_count), name='female_circle_quiver')
         MIN_FRAME = 0
-        MAX_FRAME = 378000 - 1 # 3 hr 30 min video at 30 FPS is 378000 Frames in total and minus to maintain similarity to index.max()
+        MAX_FRAME = max_frame_count - 1
         for event in ref_df.iterrows(): # for every event of quivering how should we update the series 
             event = event[1]
             metadata = event.metadata
@@ -858,7 +1382,7 @@ class FeatureExtractor:
         df.to_csv(outfile_path, index='event_id')
 
 
-def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None, visualize=False, n_minutes=None, min_likelihood=None):
+def process_video(trial_manager, quivering_annotation_path=None, visualize=False, n_minutes=None, min_likelihood=None):
     """
     Extract behavioral features from single video file.
 
@@ -866,9 +1390,9 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
     generates visualization. Prints progress messages to console.
 
     Args:
-        video_path (str/Path): Path to .mp4 video file
+        trial_manager (TrialManager): TrialManager instance for the trial. Used to resolve video
+            and pose H5 paths, and mark completion status.
         quivering_annotation_path (str/Path, optional): Path to Excel file with manual annotations
-        pose_h5_path (str/Path, optional): Path to DeepLabCut pose .h5 file
         visualize (bool): If True, generate annotated video visualization after extraction
         n_minutes (int, optional): If provided, only analyze last n_minutes of video (default: from config)
         min_likelihood (float, optional): Minimum keypoint confidence threshold (0-1) (default: from config)
@@ -876,13 +1400,13 @@ def process_video(video_path, quivering_annotation_path=None, pose_h5_path=None,
     Saves:
         *_framefeatures.csv, *_clipfeatures.csv, and optionally *_featurevis.mp4
     """
-    video_path = Path(video_path)
+    video_path = trial_manager.video_path()
     print(f'processing {video_path.stem}')
     if quivering_annotation_path is not None:
         print(f'using annotation file: {quivering_annotation_path}')
-    if pose_h5_path is not None:
-        print(f'using pose file: {pose_h5_path}')
-    fe = FeatureExtractor(video_path, quivering_annotation_path, pose_h5_path, n_minutes=n_minutes, min_likelihood=min_likelihood)
+    print(f'using pose file: {trial_manager.filtered_h5_path()}')
+
+    fe = FeatureExtractor(trial_manager, quivering_annotation_path, n_minutes=n_minutes, min_likelihood=min_likelihood)
     fe.extract_all_features()
     if visualize:
         if list(video_path.parent.glob('*_featurevis.mp4')):

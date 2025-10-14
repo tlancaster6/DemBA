@@ -9,7 +9,7 @@ from demba.identity_correction import PatchExtractor
 from demba.utils.dlc import load_tracklets, get_identity_confidence
 
 
-def create_labeled_video(config_path, video_path, shuffle=None, filtered=None):
+def create_labeled_video(trial_manager, filtered=None):
     """
     Create video with pose estimation overlays showing tracked keypoints and skeletons.
 
@@ -18,12 +18,9 @@ def create_labeled_video(config_path, video_path, shuffle=None, filtered=None):
 
     Parameters
     ----------
-    config_path : str or Path
-        Full path to DeepLabCut config.yaml file
-    video_path : str or Path
-        Full path to video file
-    shuffle : int, optional
-        Integer specifying shuffle index of training dataset (default: from config)
+    trial_manager : TrialManager
+        TrialManager instance for the trial. Used to resolve config and video paths
+        and mark completion status.
     filtered : bool, optional
         Whether to use filtered predictions if available (default: from config)
 
@@ -38,14 +35,18 @@ def create_labeled_video(config_path, video_path, shuffle=None, filtered=None):
     Colors are assigned by individual for multi-animal tracking.
     """
     from demba import config
-    if shuffle is None:
-        shuffle = config.DEFAULT_SHUFFLE
+
+    # Get paths from TrialManager
+    config_path = trial_manager.config_path
+    video_path = trial_manager.video_path()
+    shuffle = trial_manager.shuffle
+
     if filtered is None:
         filtered = config.DEFAULT_VIZ_FILTERED
 
     print('generating trajectory visualization')
     dlc.create_labeled_video(
-        config_path,  # Full path of the config.yaml file
+        str(config_path),  # Full path of the config.yaml file
         [str(video_path)],  # List of strings containing full paths to videos
         shuffle=shuffle,  # Integer specifying shuffle index of training dataset
         filtered=filtered,  # Use filtered predictions (if available)
@@ -56,10 +57,12 @@ def create_labeled_video(config_path, video_path, shuffle=None, filtered=None):
         track_method=config.DEFAULT_TRACK_METHOD
     )
 
+    # Mark stage as complete
+    trial_manager.mark_stage_complete('visualization')
+
 
 def create_identity_consistency_grids(
-    tracklet_pickle_path,
-    video_path,
+    trial_manager,
     grid_width=None,
     grid_height=None,
     patch_size=None,
@@ -74,10 +77,8 @@ def create_identity_consistency_grids(
 
     Parameters
     ----------
-    tracklet_pickle_path : str or Path
-        Path to *_el.pickle file with identity assignments
-    video_path : str or Path
-        Path to video file for extracting visual patches
+    trial_manager : TrialManager
+        TrialManager instance for the trial. Used to resolve tracklet and video paths.
     grid_width : int, optional
         Number of patches across (default: from config)
     grid_height : int, optional
@@ -106,8 +107,9 @@ def create_identity_consistency_grids(
     if conf_threshold is None:
         conf_threshold = config.DEFAULT_CONF_THRESHOLD
 
-    tracklet_path = Path(tracklet_pickle_path)
-    video_path = Path(video_path)
+    # Get paths from TrialManager
+    tracklet_path = trial_manager.el_pickle_path()
+    video_path = trial_manager.video_path()
 
     # Validate paths
     if not tracklet_path.exists():

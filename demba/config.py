@@ -6,6 +6,7 @@
 ROI_RADIUS_MM = 79.375  # Breeding pipe radius in millimeters
 VIDEO_FPS = 30  # Frames per second for video analysis
 DEFAULT_SHUFFLE = 1  # Default DeepLabCut shuffle to use
+DEFAULT_TRAINING_FRACTION = 0.95  # Default DeepLabCut training fraction for scorer name generation
 DEFAULT_N_FISH = 2  # Default number of fish in the video
 DEFAULT_TRACK_METHOD = 'ellipse'  # Tracking method for DeepLabCut multi-animal pose estimation
 
@@ -74,7 +75,7 @@ DEFAULT_FILTER_ALPHA = 0.01  # Significance level for filtering
 DEFAULT_MOUTHING_DIST_MM = 10  # Nose-to-stripe4 distance threshold for mouthing detection (mm)
 DEFAULT_MIN_LIKELIHOOD = 0.5  # Minimum keypoint confidence threshold
 DEFAULT_N_MINUTES = None  # Time restriction in minutes (None = analyze entire video)
-DEFAULT_VISUALIZE_FLAG = True  # Whether to create a video visualization of feature extraction outputs
+DEFAULT_VISUALIZE_FLAG = False  # Whether to create a video visualization of feature extraction outputs. Can be slow
 
 # Behavioral event detection (DBSCAN clustering)
 DEFAULT_MOUTHING_EPS = 5  # Maximum gap in frames for mouthing events

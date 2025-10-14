@@ -10,7 +10,8 @@ from .pose_estimation import estimate_pose
 from .identity_correction import (
     PatchExtractor, CoOccupancyDetector, TripletDataset, SimpleCNN, TripletLoss,
     train_encoder, extract_all_embeddings, cluster_and_assign_ids,
-    reassign_tracklet_ids, visualize_embeddings, main, prepare_id_correction, complete_id_correction
+    reassign_tracklet_ids, visualize_embeddings, main,
+    train_id_model, map_clusters_to_sex, assign_corrected_ids
 )
 from .tracklet_stitching import stitch_by_identity
 from .filtering import filter_predictions

@@ -3,23 +3,21 @@
 from pathlib import Path
 import DeepLabCut.deeplabcut as dlc
 import DeepLabCut.deeplabcut.pose_estimation_pytorch as pep
+from .file_manager import TrialManager
 
 print(dlc.__file__)
 
-def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, force_rerun=False):
+
+def estimate_pose(trial_manager: TrialManager, n_fish=None, force_rerun=False):
     """
     Run pose estimation and generate tracklets for a video.
 
     Parameters
     ----------
-    config_path : str or Path
-        Full path to DeepLabCut config.yaml file
-    video_path : str or Path
-        Full path to video file
-    shuffle : int, optional
-        Shuffle index of training dataset (default: 1)
+    trial_manager : TrialManager
+        TrialManager instance for the trial
     n_fish : int, optional
-        Number of individuals to track (default: 2)
+        Number of individuals to track (default: from config)
     force_rerun : bool, optional
         Whether to forcibly re-run pose estimation, even if pose output already exists
 
@@ -27,16 +25,33 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, force_rerun=Fals
     -------
     None
         Saves pose predictions to *_full.pickle and tracklets to *_el.pickle
+        Marks 'pose_estimation' stage as complete in registry
     """
-    track_method = 'ellipse'
-    video_path = Path(video_path)
-    if not force_rerun and (list(video_path.parent.glob('*_full.pickle'))):
-        print(f'Pose already extracted for {video_path.name}. skipping')
+    from . import config as demba_config
+
+    # Load defaults
+    if n_fish is None:
+        n_fish = demba_config.DEFAULT_N_FISH
+    track_method = demba_config.DEFAULT_TRACK_METHOD
+
+    config_path = trial_manager.config_path
+    video_path = trial_manager.video_path()
+    shuffle = trial_manager.shuffle
+
+    # Check if already completed
+    if not force_rerun and trial_manager.is_stage_complete('pose_estimation'):
+        print(f'Pose estimation already completed for {video_path.name}. Use force_rerun=True to re-run.')
+        return
+
+    # Run pose estimation if needed
+    full_pickle = trial_manager.full_pickle_path()
+    if not force_rerun and full_pickle.exists():
+        print(f'Pose already extracted for {video_path.name}. Skipping.')
     else:
-        print(f'\n\nestimating pose for {video_path.name}')
+        print(f'\n\nEstimating pose for {video_path.name}')
         # Source: DeepLabCut/compat.py
         pep.analyze_videos(
-            config_path,  # Full path of the config.yaml file
+            str(config_path),  # Full path of the config.yaml file
             [str(video_path)],  # List of strings containing full paths to videos for analysis
             videotype="",  # Video extension filter (empty = all common extensions)
             shuffle=shuffle,  # Integer specifying shuffle index of training dataset
@@ -44,18 +59,21 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, force_rerun=Fals
             robust_nframes=False,  # Robustly evaluate video frame count (slower but robust against mild video corruption)
             n_tracks=n_fish,  # Number of tracks for multi-animal tracking
             animal_names=[f'individual{i+1}' for i in range(n_fish)],  # List of animal names for multi-animal projects
-            auto_track=False, # leave this as False since we want to use the below code for better control
+            auto_track=False,  # Leave this as False since we want to use the below code for better control
             overwrite=True,
-            save_as_df=True, # save the pose predictions (pre-tracking) as an h5 file
+            save_as_df=True,  # Save the pose predictions (pre-tracking) as an h5 file
             detector_batch_size=4
         )
-    if not force_rerun and (list(video_path.parent.glob('*_el.pickle'))):
-        print(f'Tracklets already extracted for {video_path.name}. skipping')
+
+    # Generate tracklets if needed
+    el_pickle = trial_manager.el_pickle_path()
+    if not force_rerun and el_pickle.exists():
+        print(f'Tracklets already extracted for {video_path.name}. Skipping.')
     else:
-        print('generating tracklets')
+        print('Generating tracklets')
         # Source: DeepLabCut/compat.py
         dlc.convert_detections2tracklets(
-            config_path,  # Full path of the config.yaml file
+            str(config_path),  # Full path of the config.yaml file
             [str(video_path)],  # List of strings containing full paths to videos
             videotype="",  # Video extension filter (empty = all common extensions)
             shuffle=shuffle,  # Integer specifying shuffle index of training dataset
@@ -63,4 +81,8 @@ def estimate_pose(config_path, video_path, shuffle=1, n_fish=2, force_rerun=Fals
             ignore_bodyparts=None,  # Body parts to ignore during tracking
             track_method=track_method  # Tracking method: 'box', 'skeleton', or 'ellipse'
         )
+
+    # Mark stage as complete
+    trial_manager.mark_stage_complete('pose_estimation')
+    print(f'✓ Pose estimation complete for {video_path.name}')
 

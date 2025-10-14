@@ -17,7 +17,7 @@ from demba.config import (
 )
 
 
-def stitch_by_identity(tracklet_pickle_path, output_h5_path,
+def stitch_by_identity(trial_manager,
                        n_tracks=None,
                        min_length=None,
                        animal_names=None,
@@ -36,10 +36,9 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path,
 
     Parameters
     ----------
-    tracklet_pickle_path : str or Path
-        Path to tracklet pickle file with identity labels
-    output_h5_path : str or Path
-        Path for output H5 file
+    trial_manager : TrialManager
+        TrialManager instance for the trial. Used to resolve tracklet and output paths
+        and mark completion status.
     n_tracks : int, optional
         Number of individuals/tracks (should equal number of unique non--1 IDs).
         If None, uses DEFAULT_STITCH_N_TRACKS from config.
@@ -60,6 +59,9 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path,
     dict
         Mapping of identity ID to animal name
     """
+    # Get paths from TrialManager
+    tracklet_pickle_path = trial_manager.el_pickle_path()
+    output_h5_path = trial_manager.stitched_h5_path()
 
     # Apply config defaults
     if n_tracks is None:
@@ -193,6 +195,9 @@ def stitch_by_identity(tracklet_pickle_path, output_h5_path,
     )
 
     print("Identity-preserving stitching complete!")
+
+    # Mark stage as complete
+    trial_manager.mark_stage_complete('tracklet_stitching')
 
     return id_to_name
 

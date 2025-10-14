@@ -11,20 +11,24 @@ from demba.utils.dlc import parse_trial_name
 
 class Plotter:
 
-    def __init__(self, parent_dir, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
+    def __init__(self, project_manager, mouthing_dist_mm=None, min_likelihood=None, n_minutes=None):
         """
-        parent_dir should be a directory containing two folders: Videos and Annotations. Annotations should hold a single
-        file: Annotations.xlsx. Videos should contain a directory for each video/trial analyzed. Each video/trial
-        directory should contain the clipfeatures and framefeatures csvs. Plots will be output into a new directory
-        in the parent_dir called "Summary"
+        Initialize Plotter for statistical analysis and plotting across all trials in a project.
 
         Parameters:
+        - project_manager (ProjectManager): ProjectManager instance for the project. Used to discover
+            trials and resolve paths.
         - mouthing_dist_mm: Mouthing distance threshold in mm (default: from config)
         - min_likelihood: Minimum likelihood threshold (default: from config)
         - n_minutes: Time restriction in minutes (default: from config)
         """
         from demba import config
-        self.parent_dir = Path(parent_dir)
+
+        # Store ProjectManager
+        self.project_manager = project_manager
+
+        # Set up paths
+        self.parent_dir = project_manager.project_dir.parent
         self.annotation_path = self.parent_dir / 'Annotations' / 'Annotations.xlsx'
 
         # Load defaults from config
@@ -42,7 +46,7 @@ class Plotter:
 
         self.output_dir = self.parent_dir / 'Summary'
         self.output_dir.mkdir(exist_ok=True)
-        self.data_dir = self.parent_dir / 'Videos'
+        self.data_dir = project_manager.videos_dir
         self.bhve_dirs, self.ctrl_dirs = self.get_bhve_ctrl_dir_paths()
         self.concat_clipfeature_csvs()
         self.clipfeature_df = pd.read_csv(str(self.output_dir / f'collated{self.param_suffix}_clipfeatures.csv'), index_col=0)
@@ -75,65 +79,183 @@ class Plotter:
         df.to_csv(str(self.output_dir / f'collated{self.param_suffix}_clipfeatures.csv'))
 
     def get_bhve_ctrl_dir_paths(self):
-        data_subdirs = list(self.data_dir.glob('*'))
-        control_subdirs = [d for d in data_subdirs if ('CTRL' in d.name or 'DC' in d.name)]
-        behave_subdirs = [d for d in data_subdirs if ('BHVE' in d.name or 'DB' in d.name)]
-        if len(data_subdirs) != (len(control_subdirs) + len(behave_subdirs)):
+        # Use ProjectManager to discover all trial directories
+        all_trial_dirs = self.project_manager.list_trial_dirs()
+        control_subdirs = [d for d in all_trial_dirs if ('CTRL' in d.name or 'DC' in d.name)]
+        behave_subdirs = [d for d in all_trial_dirs if ('BHVE' in d.name or 'DB' in d.name)]
+        if len(all_trial_dirs) != (len(control_subdirs) + len(behave_subdirs)):
             print('Warning: some directories not parsed into behave or control groups and will be omitted from analysis')
         return sorted(behave_subdirs), sorted(control_subdirs)
 
     def generate_clipfeature_boxplots(self):
+        """Generate boxplots for clip-level features including sex-specific metrics."""
+        # Aggregate metrics (combined or non-sex-specific)
         target_stats = [
-             'n_mouthing_events',
              'n_double_occupancy_events',
              'n_spawning_events',
-             'mouthing_event_fraction',
              'double_occupancy_event_fraction',
              'spawning_event_fraction',
-             'raw_zero_occupancy_fraction',
-             'raw_single_occupancy_fraction',
-             'raw_double_occupancy_fraction',
+             'male_roi_occupancy_fraction',
+             'female_roi_occupancy_fraction',
         ]
 
+        # Add sex-specific mouthing metrics if available
+        if 'n_male_mouthing_events' in self.clipfeature_df.columns:
+            target_stats.extend([
+                'n_male_mouthing_events',
+                'n_female_mouthing_events',
+                'male_mouthing_event_fraction',
+                'female_mouthing_event_fraction',
+            ])
+
+        # Add quivering metrics if available
+        if 'n_male_circle_quivers' in self.clipfeature_df.columns:
+            target_stats.extend([
+                'n_male_circle_quivers',
+                'n_female_circle_quivers',
+                'male_circle_quivering_fraction',
+                'female_circle_quivering_fraction',
+            ])
+
+        # Filter out any stats that don't exist in the dataframe
+        available_stats = [stat for stat in target_stats if stat in self.clipfeature_df.columns]
+
+        if not available_stats:
+            print("Warning: No valid clip features found for boxplots")
+            return
+
         n_cols = 3
-        n_rows = int(ceil(len(target_stats) / n_cols))
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(7.5, 10))
-        flaxes = axes.flatten()
-        for i, target in enumerate(target_stats):
+        n_rows = int(ceil(len(available_stats) / n_cols))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(7.5, 2.5 * n_rows))
+        flaxes = axes.flatten() if n_rows > 1 else [axes] if n_rows == 1 else []
+
+        for i, target in enumerate(available_stats):
             sns.boxplot(self.clipfeature_df, x=target, hue='split', ax=flaxes[i])
             flaxes[i].legend(loc='lower right')
+            flaxes[i].set_title(target.replace('_', ' ').title(), fontsize=9)
+
+        # Hide any unused subplots
+        for i in range(len(available_stats), len(flaxes)):
+            flaxes[i].set_visible(False)
+
         fig.tight_layout()
         fig.savefig(str(self.output_dir / f'clipfeature{self.param_suffix}_boxplots.pdf'))
         plt.close(fig)
 
     def generate_auto_manual_correlation_plots(self):
+        """Generate correlation plots between automated mouthing detection and manual quivering annotations."""
         if "n_male_circle_quivers" not in self.clipfeature_df.columns:
             print('    no manual annotation data found')
             return
+
+        # Check for sex-specific mouthing events
+        has_sex_specific_mouthing = 'n_male_mouthing_events' in self.clipfeature_df.columns
+
+        if not has_sex_specific_mouthing:
+            print('    Warning: Sex-specific mouthing events not found in clipfeatures')
+            return
+
+        # Calculate combined metrics for aggregate comparison
+        n_mouthing_events = self.clipfeature_df.n_male_mouthing_events + self.clipfeature_df.n_female_mouthing_events
+        mouthing_event_fraction = self.clipfeature_df.male_mouthing_event_fraction + self.clipfeature_df.female_mouthing_event_fraction
         n_circle_quivers = self.clipfeature_df.n_male_circle_quivers + self.clipfeature_df.n_female_circle_quivers
         circle_quiver_fraction = self.clipfeature_df.male_circle_quivering_fraction + self.clipfeature_df.female_circle_quivering_fraction
 
-        fig, axes = plt.subplots(1, 2, figsize=(7.5, 5))
-        sns.scatterplot(x=self.clipfeature_df.n_mouthing_events, y=n_circle_quivers, ax=axes[0])
-        sns.scatterplot(x=self.clipfeature_df.mouthing_event_fraction, y=circle_quiver_fraction, ax=axes[1])
+        # Create aggregate correlation plots
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        sns.scatterplot(x=n_mouthing_events, y=n_circle_quivers, hue=self.clipfeature_df['split'], ax=axes[0])
+        axes[0].set_xlabel('Total Mouthing Events (Male + Female)')
+        axes[0].set_ylabel('Total Circle Quivers (Manual)')
+        axes[0].set_title('Event Counts: Auto vs Manual')
+
+        sns.scatterplot(x=mouthing_event_fraction, y=circle_quiver_fraction, hue=self.clipfeature_df['split'], ax=axes[1])
+        axes[1].set_xlabel('Total Mouthing Fraction (Male + Female)')
+        axes[1].set_ylabel('Total Circle Quiver Fraction (Manual)')
+        axes[1].set_title('Event Fractions: Auto vs Manual')
+
         fig.tight_layout()
         fig.savefig(str(self.output_dir / f'auto_manual_correlation{self.param_suffix}_plots.pdf'))
         plt.close(fig)
 
-    def generate_event_timeseries_heatmaps(self, bin_width_frames=1800):
+    def generate_cross_sex_correlation_plots(self):
+        """
+        Generate correlation plots exploring cross-sex behavioral relationships.
+        Specifically examines male mouthing vs female quivering and vice versa,
+        which are biologically relevant courtship interactions.
+        """
+        # Check for required columns
+        required_cols = ['n_male_mouthing_events', 'n_female_mouthing_events',
+                        'n_male_circle_quivers', 'n_female_circle_quivers']
+        if not all(col in self.clipfeature_df.columns for col in required_cols):
+            print('    Warning: Missing required columns for cross-sex correlation plots')
+            return
+
+        # Create 2x2 grid of correlation plots
+        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+
+        # Male mouthing vs Female quivering (primary courtship pattern)
+        sns.scatterplot(x=self.clipfeature_df.n_male_mouthing_events,
+                       y=self.clipfeature_df.n_female_circle_quivers,
+                       hue=self.clipfeature_df['split'],
+                       ax=axes[0, 0])
+        axes[0, 0].set_xlabel('Male Mouthing Events')
+        axes[0, 0].set_ylabel('Female Circle Quivers')
+        axes[0, 0].set_title('Male Mouthing → Female Quivering')
+
+        # Female mouthing vs Male quivering
+        sns.scatterplot(x=self.clipfeature_df.n_female_mouthing_events,
+                       y=self.clipfeature_df.n_male_circle_quivers,
+                       hue=self.clipfeature_df['split'],
+                       ax=axes[0, 1])
+        axes[0, 1].set_xlabel('Female Mouthing Events')
+        axes[0, 1].set_ylabel('Male Circle Quivers')
+        axes[0, 1].set_title('Female Mouthing → Male Quivering')
+
+        # Male mouthing vs Female mouthing
+        sns.scatterplot(x=self.clipfeature_df.n_male_mouthing_events,
+                       y=self.clipfeature_df.n_female_mouthing_events,
+                       hue=self.clipfeature_df['split'],
+                       ax=axes[1, 0])
+        axes[1, 0].set_xlabel('Male Mouthing Events')
+        axes[1, 0].set_ylabel('Female Mouthing Events')
+        axes[1, 0].set_title('Male vs Female Mouthing')
+
+        # Male quivering vs Female quivering
+        sns.scatterplot(x=self.clipfeature_df.n_male_circle_quivers,
+                       y=self.clipfeature_df.n_female_circle_quivers,
+                       hue=self.clipfeature_df['split'],
+                       ax=axes[1, 1])
+        axes[1, 1].set_xlabel('Male Circle Quivers')
+        axes[1, 1].set_ylabel('Female Circle Quivers')
+        axes[1, 1].set_title('Male vs Female Quivering')
+
+        fig.tight_layout()
+        fig.savefig(str(self.output_dir / f'cross_sex_correlation{self.param_suffix}_plots.pdf'))
+        plt.close(fig)
+
+    def generate_event_timeseries_heatmaps(self, bin_width_frames=1800, sex_specific=False):
         """
         Generate heatmaps showing event occurrence over time.
-        Creates 3 separate plots (one per event type) with trials as rows.
+        Creates separate plots (one per event type) with trials as rows.
 
         Parameters:
-        - bin_width_frames: Width of each time bin in frames (default: 60, which is 2 seconds at 30fps)
+        - bin_width_frames: Width of each time bin in frames (default: 1800, which is 60 seconds at 30fps)
+        - sex_specific: If True, generate separate heatmaps for male and female mouthing events.
+                       If False, combine male and female mouthing into a single combined heatmap.
         """
 
-        event_columns = ['mouthing_event_id', 'spawning_event_id', 'double_occupancy_event_id']
-        event_names = ['Mouthing', 'Spawning', 'Double Occupancy']
+        if sex_specific:
+            # Sex-specific event columns
+            event_columns = ['male_mouthing_event_id', 'female_mouthing_event_id',
+                           'spawning_event_id', 'double_occupancy_event_id']
+            event_names = ['Male Mouthing', 'Female Mouthing', 'Spawning', 'Double Occupancy']
+        else:
+            # Combined mouthing events (backward compatible)
+            event_columns = ['combined_mouthing_event_id', 'spawning_event_id', 'double_occupancy_event_id']
+            event_names = ['Mouthing (Combined)', 'Spawning', 'Double Occupancy']
 
         # Collect data from all trials
-        trial_data = self._collect_trial_timeseries_data(event_columns, bin_width_frames)
+        trial_data = self._collect_trial_timeseries_data(event_columns, bin_width_frames, sex_specific)
 
         if not trial_data:
             print("Warning: No valid trial data found for heatmaps")
@@ -141,9 +263,9 @@ class Plotter:
 
         # Generate one plot per event type
         for event_idx, (event_col, event_name) in enumerate(zip(event_columns, event_names)):
-            self._generate_single_metric_heatmap(trial_data, event_idx, event_name, bin_width_frames)
+            self._generate_single_metric_heatmap(trial_data, event_idx, event_name, bin_width_frames, sex_specific)
 
-    def _collect_trial_timeseries_data(self, event_columns, bin_width_frames):
+    def _collect_trial_timeseries_data(self, event_columns, bin_width_frames, sex_specific=False):
         """Collect timeseries data from all trials"""
         import numpy as np
 
@@ -162,6 +284,16 @@ class Plotter:
 
             # Load framefeatures data
             framefeatures = pd.read_csv(framefeatures_path, index_col=0)
+
+            # If not sex_specific, create combined_mouthing_event_id from male and female
+            if not sex_specific and 'combined_mouthing_event_id' not in framefeatures.columns:
+                if 'male_mouthing_event_id' in framefeatures.columns and 'female_mouthing_event_id' in framefeatures.columns:
+                    # Combine male and female mouthing events
+                    # Use male events where they exist, female where male doesn't exist
+                    framefeatures['combined_mouthing_event_id'] = framefeatures['male_mouthing_event_id'].copy()
+                    # For frames where male has no event but female does, use female event
+                    female_only_mask = (framefeatures['male_mouthing_event_id'] == -1) & (framefeatures['female_mouthing_event_id'] >= 0)
+                    framefeatures.loc[female_only_mask, 'combined_mouthing_event_id'] = framefeatures.loc[female_only_mask, 'female_mouthing_event_id']
 
             # Check if required columns exist
             available_columns = [col for col in event_columns if col in framefeatures.columns]
@@ -213,7 +345,7 @@ class Plotter:
             'bin_width_frames': bin_width_frames
         }
 
-    def _generate_single_metric_heatmap(self, trial_data, event_idx, event_name, bin_width_frames):
+    def _generate_single_metric_heatmap(self, trial_data, event_idx, event_name, bin_width_frames, sex_specific=False):
         """Generate a single heatmap for one event metric across all trials"""
         import numpy as np
 
@@ -266,7 +398,8 @@ class Plotter:
         plt.tight_layout()
 
         # Save plot as full-page PDF
-        plot_filename = f'event_timeseries_{event_name.lower().replace(" ", "_")}{self.param_suffix}.pdf'
+        suffix = '_sex_specific' if sex_specific else ''
+        plot_filename = f'event_timeseries_{event_name.lower().replace(" ", "_")}{self.param_suffix}{suffix}.pdf'
         fig.savefig(str(self.output_dir / plot_filename),
                    bbox_inches='tight',
                    orientation='portrait')

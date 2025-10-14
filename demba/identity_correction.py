@@ -634,8 +634,8 @@ def build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_pat
 
 
 def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
-                 n_epochs=150, batch_size=32, lr=0.001, device='cuda', min_tracklet_length=10,
-                 frame_stride=None, warmup_epochs=5):
+                 n_epochs=200, batch_size=64, lr=0.001, device='cuda', min_tracklet_length=60,
+                 frame_stride=5, warmup_epochs=10):
     """
     Train CNN encoder with triplet loss.
 
@@ -662,7 +662,7 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     frame_stride : int, optional
         Sample every Nth frame for patch cache (default: from config)
     warmup_epochs : int, optional
-        Number of epochs for learning rate warmup (default: 5)
+        Number of epochs for learning rate warmup (default: 10)
 
     Returns
     -------
@@ -1590,14 +1590,13 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
     print(f"\nSummary statistics saved to: {report_path}")
 
 
-def prepare_id_correction(tracklet_path, n_epochs=None, batch_size=None, lr=None,
-                          patch_size=None, padding=None, conf_threshold=None,
-                          device=None, force_retrain=False, min_tracklet_length=None,
-                          min_overlap_frames=None, frame_stride=None):
+def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
+                   patch_size=None, padding=None, conf_threshold=None,
+                   device=None, force_retrain=False, min_tracklet_length=None,
+                   min_overlap_frames=None, frame_stride=None):
     """
-    Prepare ID correction by training model, extracting embeddings, and clustering.
-    This function runs all non-interactive steps up to (but not including) the
-    interactive cluster mapping.
+    Train ID correction model, extract embeddings, and perform clustering.
+    This is substage 1 of ID correction: all non-interactive model training steps.
 
     Parameters
     ----------
@@ -1789,21 +1788,24 @@ def prepare_id_correction(tracklet_path, n_epochs=None, batch_size=None, lr=None
         'output_dir': output_dir
     }
 
-    print("Preparation complete!")
-    print("Call complete_id_correction() with the returned data to run the interactive mapping.\n")
+    print("Model training complete!")
+    print("Call map_clusters_to_sex() with the returned data to run the interactive mapping.\n")
 
     return prep_data
 
 
-def complete_id_correction(prep_data, min_silhouette=None):
+def map_clusters_to_sex(prep_data):
     """
-    Complete ID correction by running the interactive cluster mapping and saving results.
-    This function runs the interactive portion that requires user input.
+    Interactively map clusters to biological sex (male/female).
+    This is substage 2 of ID correction: the interactive portion requiring user input.
+
+    Creates a side-by-side comparison video showing trajectory segments from each cluster,
+    then prompts the user to identify which cluster corresponds to male vs female.
 
     Parameters
     ----------
     prep_data : dict
-        Dictionary returned from prepare_id_correction() containing:
+        Dictionary returned from train_id_model() containing:
             - 'tracklets': list of Tracklet objects
             - 'header': DataFrame header
             - 'embeddings': list of embedding dicts with cluster labels
@@ -1813,6 +1815,54 @@ def complete_id_correction(prep_data, min_silhouette=None):
             - 'tracklet_path': Path to tracklet file
             - 'video_path': Path to video file
             - 'output_dir': Path to output directory
+
+    Returns
+    -------
+    cluster_mapping : dict
+        Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
+    """
+    # Unpack preparation data
+    tracklets = prep_data['tracklets']
+    embeddings = prep_data['embeddings']
+    patch_extractor = prep_data['patch_extractor']
+    tracklet_path = prep_data['tracklet_path']
+    video_path = prep_data['video_path']
+
+    print("="*60)
+    print("Interactive ID Correction - Cluster Mapping")
+    print("="*60)
+    print(f"Tracklet file: {tracklet_path.name}")
+    print(f"Video file: {video_path.name}")
+    print("="*60 + "\n")
+
+    # Interactive mapping
+    print("Mapping clusters to individuals...")
+    cluster_mapping = interactive_cluster_mapping(embeddings, tracklets, patch_extractor)
+    print(f"Cluster mapping: {cluster_mapping}\n")
+
+    return cluster_mapping
+
+
+def assign_corrected_ids(prep_data, cluster_mapping, min_silhouette=None):
+    """
+    Assign corrected IDs to tracklets and generate final outputs.
+    This is substage 3 of ID correction: ID reassignment, visualization, and reporting.
+
+    Parameters
+    ----------
+    prep_data : dict
+        Dictionary returned from train_id_model() containing:
+            - 'tracklets': list of Tracklet objects
+            - 'header': DataFrame header
+            - 'embeddings': list of embedding dicts with cluster labels
+            - 'kmeans': fitted KMeans model
+            - 'patch_extractor': PatchExtractor object
+            - 'model': trained SimpleCNN model
+            - 'tracklet_path': Path to tracklet file
+            - 'video_path': Path to video file
+            - 'output_dir': Path to output directory
+    cluster_mapping : dict
+        Maps cluster ID to semantic label from map_clusters_to_sex()
     min_silhouette : float, optional
         Minimum silhouette score to assign ID (default: from config).
         Range: -1 to 1. Recommended: 0.0 (lenient), 0.2 (moderate), 0.5 (strict)
@@ -1834,23 +1884,13 @@ def complete_id_correction(prep_data, min_silhouette=None):
     header = prep_data['header']
     embeddings = prep_data['embeddings']
     kmeans = prep_data['kmeans']
-    patch_extractor = prep_data['patch_extractor']
-    model = prep_data['model']
     tracklet_path = prep_data['tracklet_path']
     video_path = prep_data['video_path']
     output_dir = prep_data['output_dir']
 
     print("="*60)
-    print("Interactive ID Correction - Cluster Mapping")
+    print("ID Assignment and Finalization")
     print("="*60)
-    print(f"Tracklet file: {tracklet_path.name}")
-    print(f"Video file: {video_path.name}")
-    print("="*60 + "\n")
-
-    # Interactive mapping
-    print("Mapping clusters to individuals...")
-    cluster_mapping = interactive_cluster_mapping(embeddings, tracklets, patch_extractor)
-    print(f"Cluster mapping: {cluster_mapping}\n")
 
     # Visualize embeddings
     print("Creating embedding visualization...")
@@ -1873,20 +1913,23 @@ def complete_id_correction(prep_data, min_silhouette=None):
     return corrected_tracklets, id_stats
 
 
-def main(tracklet_path, n_epochs=None, batch_size=None, lr=None, patch_size=None,
+def main(trial_manager, n_epochs=None, batch_size=None, lr=None, patch_size=None,
          padding=None, conf_threshold=None, device=None, force_retrain=False,
          min_silhouette=None, min_tracklet_length=None, min_overlap_frames=None,
          frame_stride=None):
     """
     Triplet loss-based ID correction for DeepLabCut tracklets.
 
-    This function runs the complete pipeline: preparation (training, embedding extraction,
-    clustering) followed by interactive cluster mapping and ID reassignment.
+    This function runs the complete three-substage pipeline:
+      1. train_id_model(): Train CNN, extract embeddings, cluster (non-interactive)
+      2. map_clusters_to_sex(): Interactive cluster-to-sex mapping (interactive)
+      3. assign_corrected_ids(): ID reassignment, visualization, reporting (non-interactive)
 
     Parameters
     ----------
-    tracklet_path : str or Path
-        Path to *el.pickle tracklet file
+    trial_manager : TrialManager
+        TrialManager instance for the trial. Used to resolve tracklet paths and mark
+        completion status.
     n_epochs : int, optional
         Number of training epochs (default: from config)
     batch_size : int, optional
@@ -1922,8 +1965,10 @@ def main(tracklet_path, n_epochs=None, batch_size=None, lr=None, patch_size=None
     id_stats : dict
         ID assignment statistics
     """
-    # Run preparation phase
-    prep_data = prepare_id_correction(
+    # Get tracklet path from TrialManager
+    tracklet_path = trial_manager.el_pickle_path()
+    # Substage 1: Train model, extract embeddings, and cluster
+    prep_data = train_id_model(
         tracklet_path=tracklet_path,
         n_epochs=n_epochs,
         batch_size=batch_size,
@@ -1939,13 +1984,20 @@ def main(tracklet_path, n_epochs=None, batch_size=None, lr=None, patch_size=None
     )
 
     if prep_data is None:
-        # User aborted during preparation
+        # Training was skipped (e.g., already corrected)
         return None, None
 
-    # Run interactive completion phase
-    corrected_data, id_stats = complete_id_correction(
+    # Substage 2: Interactive cluster mapping
+    cluster_mapping = map_clusters_to_sex(prep_data)
+
+    # Substage 3: Assign IDs and finalize
+    corrected_data, id_stats = assign_corrected_ids(
         prep_data=prep_data,
+        cluster_mapping=cluster_mapping,
         min_silhouette=min_silhouette
     )
+
+    # Mark stage as complete
+    trial_manager.mark_stage_complete('identity_correction')
 
     return corrected_data, id_stats

@@ -11,30 +11,47 @@ from pathlib import Path
 
 import demba
 from demba import config
+from demba.file_manager import TrialManager, ProjectManager
+
+
+def get_trial_manager(args):
+    """Create TrialManager from args. Requires video and dlc_config."""
+    if not hasattr(args, 'video') or not hasattr(args, 'dlc_config'):
+        raise ValueError("Both --video and --dlc-config are required to infer file paths")
+
+    if args.video is None or args.dlc_config is None:
+        raise ValueError("Both --video and --dlc-config are required to infer file paths")
+
+    return TrialManager(
+        trial_dir=args.video.parent,
+        config_path=args.dlc_config,
+        shuffle=args.shuffle,
+        training_fraction=config.DEFAULT_TRAINING_FRACTION
+    )
 
 
 def cmd_pose(args):
     """Run pose estimation on video(s)."""
     from demba.pose_estimation import estimate_pose
 
-    print(f"Running pose estimation on: {args.video}")
+    tm = get_trial_manager(args)
+    print(f"Running pose estimation on: {tm.video_path()}")
     estimate_pose(
-        config_path=args.dlc_config,
-        video_path=args.video,
-        shuffle=args.shuffle,
+        trial_manager=tm,
         n_fish=args.n_fish,
         force_rerun=args.force
     )
-    print(" Pose estimation complete")
+    print("Pose estimation complete")
 
 
 def cmd_id_correction(args):
     """Run identity correction on tracklets."""
     from demba.identity_correction import main as id_correction_main
 
-    print(f"Running identity correction on: {args.tracklet_pickle}")
+    tm = get_trial_manager(args)
+    print(f"Running identity correction on: {tm.el_pickle_path()}")
     id_correction_main(
-        tracklet_path=args.tracklet_pickle,
+        trial_manager=tm,
         n_epochs=args.n_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -46,77 +63,72 @@ def cmd_id_correction(args):
         min_silhouette=args.min_silhouette,
         frame_stride=args.cache_frame_stride
     )
-    print(" Identity correction complete")
+    print("Identity correction complete")
 
 
 def cmd_stitch(args):
     """Run tracklet stitching."""
     from demba.tracklet_stitching import stitch_by_identity
 
-    print(f"Stitching tracklets: {args.tracklet_pickle}")
+    tm = get_trial_manager(args)
+    print(f"Stitching tracklets: {tm.el_pickle_path()}")
     stitch_by_identity(
-        tracklet_pickle_path=args.tracklet_pickle,
-        output_h5_path=args.output_h5,
+        trial_manager=tm,
         n_tracks=args.n_tracks,
         min_length=args.min_length,
         animal_names=args.animal_names
     )
-    print(" Tracklet stitching complete")
+    print("Tracklet stitching complete")
 
 
 def cmd_filter(args):
     """Run temporal filtering on pose predictions."""
     from demba.filtering import filter_predictions
 
-    print(f"Filtering predictions for: {args.video}")
-    filter_predictions(
-        config_path=args.dlc_config,
-        video_path=args.video,
-        shuffle=args.shuffle
-    )
-    print(" Filtering complete")
+    tm = get_trial_manager(args)
+    print(f"Filtering predictions for: {tm.video_path()}")
+    filter_predictions(trial_manager=tm)
+    print("Filtering complete")
 
 
 def cmd_features(args):
     """Extract behavioral features from video(s)."""
     from demba.feature_extraction import process_video
 
-    print(f"Processing video: {args.video}")
+    tm = get_trial_manager(args)
+    print(f"Processing video: {tm.video_path()}")
     process_video(
-        video_path=args.video,
+        trial_manager=tm,
         quivering_annotation_path=args.quivering_annotations,
-        pose_h5_path=args.pose_h5,
         visualize=args.visualize,
         n_minutes=args.n_minutes,
         min_likelihood=args.min_likelihood
     )
-    print(" Feature extraction complete")
+    print("Feature extraction complete")
 
 
 def cmd_visualize(args):
     """Create labeled video with pose overlays."""
     from demba.visualization import create_labeled_video, create_identity_consistency_grids
-    print(f"Creating labeled video for: {args.video}")
-    create_labeled_video(
-        config_path=args.dlc_config.resolve(),
-        video_path=args.video.resolve(),
-        shuffle=args.shuffle
-    )
-    print(f"Creating ID consistency grids for {args.video}")
-    create_identity_consistency_grids(
-        tracklet_pickle_path=args.tracklet_pickle.resolve(),
-        video_path=args.video.resolve()
-    )
-    print(" Visualization complete")
+
+    tm = get_trial_manager(args)
+    print(f"Creating labeled video for: {tm.video_path()}")
+    create_labeled_video(trial_manager=tm)
+
+    print(f"Creating ID consistency grids for {tm.video_path()}")
+    create_identity_consistency_grids(trial_manager=tm)
+
+    print("Visualization complete")
 
 
 def cmd_analyze(args):
     """Run statistical analysis and generate plots."""
     from demba.analysis import Plotter
 
-    print(f"Analyzing data in: {args.parent_dir}")
+    pm = ProjectManager(args.parent_dir)
+    print(f"Analyzing data in: {pm.project_dir}")
     plotter = Plotter(
-        parent_dir=args.parent_dir,
+        project_manager=pm,
         mouthing_dist_mm=args.mouthing_dist_mm,
         min_likelihood=args.min_likelihood,
         n_minutes=args.n_minutes
@@ -128,12 +140,13 @@ def cmd_analyze(args):
     if 'all' in args.plots or 'correlation' in args.plots:
         print("  Generating correlation plots...")
         plotter.generate_auto_manual_correlation_plots()
+        plotter.generate_cross_sex_correlation_plots()
 
     if 'all' in args.plots or 'heatmaps' in args.plots:
         print("  Generating heatmaps...")
         plotter.generate_event_timeseries_heatmaps(bin_width_frames=args.bin_width)
 
-    print(" Analysis complete")
+    print("Analysis complete")
 
 
 def cmd_full(args):
@@ -142,22 +155,29 @@ def cmd_full(args):
     print("Running full DemBA pipeline")
     print("="*60)
 
+    # Initialize TrialManager for file path management
+    trial_manager = get_trial_manager(args)
+
+    print(f"\nTrial: {trial_manager.video_stem}")
+    print(f"Scorer: {trial_manager.scorer_name[:60]}...")
+
+    # Display current completion status
+    status = trial_manager.get_completion_status()
+    print("\nPipeline stage status:")
+    for stage, completed in status.items():
+        symbol = "DONE" if completed else "TODO"
+        print(f"  [{symbol}] {stage}")
+    print()
+
     # Step 1: Pose estimation
     print("\n[1/7] Running pose estimation...")
     cmd_pose(args)
 
-    # Infer file paths from pose estimation output
-    video_dir = args.video.parent
-    full_pickle_matches = list(video_dir.glob('*_full.pickle'))
-    if not full_pickle_matches:
-        raise FileNotFoundError(f"Pose estimation did not produce expected *_full.pickle file in {video_dir}")
-
-    # Derive tracklet and output paths from the _full.pickle filename
-    full_pickle_path = full_pickle_matches[0]
-    file_stem = str(full_pickle_path.name).replace('_full.pickle', '')
-    args.tracklet_pickle = video_dir / f"{file_stem}_el.pickle"
-    args.output_h5 = video_dir / f"{file_stem}_el.h5"
-    args.pose_h5 = args.output_h5
+    # Verify pose estimation produced expected files
+    if not trial_manager.el_pickle_path().exists():
+        raise FileNotFoundError(
+            f"Pose estimation did not produce expected file: {trial_manager.el_pickle_path()}"
+        )
 
     # Step 2: Identity correction
     print("\n[2/7] Running identity correction...")
@@ -187,7 +207,13 @@ def cmd_full(args):
         print("\n[7/7] Skipping analysis (no parent directory specified)")
 
     print("\n" + "="*60)
-    print(" Full pipeline complete!")
+    print("Full pipeline complete!")
+    print("="*60)
+
+    # Display final completion status
+    status = trial_manager.get_completion_status()
+    completed_stages = sum(1 for s in status.values() if s)
+    print(f"\nCompleted {completed_stages}/{len(status)} pipeline stages")
     print("="*60)
 
 
@@ -209,16 +235,16 @@ Pipeline stages (in order):
 
 Examples:
   # Run pose estimation
-  python main.py pose --video data/trial1.mp4 --dlc-config config.yaml
+  python main.py pose --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
 
-  # Run identity correction
-  python main.py id-correction --tracklet-pickle data/trial1_el.pickle
-
-  # Extract features from single video
-  python main.py features --video data/trial1.mp4 --pose-h5 data/trial1.h5
+  # Run identity correction (all paths inferred from video + config)
+  python main.py id-correction --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
 
   # Run full pipeline
-  python main.py full --video data/trial1.mp4 --dlc-config config.yaml
+  python main.py full --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+
+  # Run analysis on project
+  python main.py analyze --parent-dir /path/to/project
         """
     )
 
@@ -238,7 +264,9 @@ Examples:
 
     # ========== IDENTITY CORRECTION ==========
     id_parser = subparsers.add_parser('id-correction', help='Run identity correction')
-    id_parser.add_argument('--tracklet-pickle', required=True, type=Path, help='Path to *_el.pickle file')
+    id_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
+    id_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
+    id_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
     id_parser.add_argument('--n-epochs', type=int, default=config.DEFAULT_ID_N_EPOCHS, help='Training epochs')
     id_parser.add_argument('--batch-size', type=int, default=config.DEFAULT_ID_BATCH_SIZE, help='Batch size')
     id_parser.add_argument('--lr', type=float, default=config.DEFAULT_ID_LEARNING_RATE, help='Learning rate')
@@ -254,8 +282,9 @@ Examples:
 
     # ========== TRACKLET STITCHING ==========
     stitch_parser = subparsers.add_parser('stitch', help='Stitch tracklets')
-    stitch_parser.add_argument('--tracklet-pickle', required=True, type=Path, help='Path to *_el.pickle file')
-    stitch_parser.add_argument('--output-h5', required=True, type=Path, help='Output H5 file path')
+    stitch_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
+    stitch_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
+    stitch_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
     stitch_parser.add_argument('--n-tracks', type=int, default=config.DEFAULT_N_FISH, help='Number of tracks')
     stitch_parser.add_argument('--min-length', type=int, default=config.DEFAULT_MIN_TRACKLET_LENGTH, help='Minimum tracklet length')
     stitch_parser.add_argument('--animal-names', nargs='+', help='Animal names (e.g., individual1 individual2)')
@@ -270,8 +299,9 @@ Examples:
 
     # ========== FEATURE EXTRACTION ==========
     features_parser = subparsers.add_parser('features', help='Extract behavioral features')
-    features_parser.add_argument('--video', type=Path, help='Path to video file')
-    features_parser.add_argument('--pose-h5', type=Path, help='Path to pose H5 file')
+    features_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
+    features_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
+    features_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
     features_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations Excel file')
     features_parser.add_argument('--visualize', type=bool, default=config.DEFAULT_VISUALIZE_FLAG, help='Generate feature visualizations')
     features_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES, help='Only analyze last N minutes')
@@ -280,7 +310,6 @@ Examples:
 
     # ========== VISUALIZATION ==========
     viz_parser = subparsers.add_parser('visualize', help='Create labeled video')
-    viz_parser.add_argument('--tracklet-pickle', required=True, type=Path, help='Path to *_el.pickle file')
     viz_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
     viz_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
     viz_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE, help='Shuffle index')
@@ -302,7 +331,6 @@ Examples:
     full_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
     full_parser.add_argument('--parent-dir', type=Path, help='Parent directory for analysis stage')
     full_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations')
-
 
     # Parameters (use defaults from config)
     full_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE)
@@ -341,7 +369,7 @@ Examples:
     args = parser.parse_args()
 
     # Validate paths exist where required
-    if hasattr(args, 'video') and args.video and not args.command == 'full':
+    if hasattr(args, 'video') and args.video:
         if not args.video.exists():
             print(f"Error: Video file not found: {args.video}", file=sys.stderr)
             sys.exit(1)
