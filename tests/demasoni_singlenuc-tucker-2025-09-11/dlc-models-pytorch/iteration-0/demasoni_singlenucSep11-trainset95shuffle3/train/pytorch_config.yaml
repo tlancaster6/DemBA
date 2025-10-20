@@ -1,0 +1,179 @@
+data:
+  bbox_margin: 20
+  colormode: RGB
+  inference:
+    normalize_images: true
+    top_down_crop:
+      width: 256
+      height: 256
+  train:
+    affine:
+      p: 0.5
+      rotation: 30
+      scaling:
+      - 1.0
+      - 1.0
+      translation: 0
+    gaussian_noise: 12.75
+    motion_blur: true
+    normalize_images: true
+    top_down_crop:
+      width: 256
+      height: 256
+detector:
+  data:
+    colormode: RGB
+    inference:
+      normalize_images: true
+    train:
+      affine:
+        p: 0.5
+        rotation: 30
+        scaling:
+        - 1.0
+        - 1.0
+        translation: 40
+      collate:
+        type: ResizeFromDataSizeCollate
+        min_scale: 0.4
+        max_scale: 1.0
+        min_short_side: 128
+        max_short_side: 1152
+        multiple_of: 32
+        to_square: false
+      hflip: true
+      normalize_images: true
+  device: auto
+  model:
+    type: SSDLite
+    freeze_bn_stats: true
+    freeze_bn_weights: false
+  runner:
+    type: DetectorTrainingRunner
+    key_metric: test.mAP@50:95
+    key_metric_asc: true
+    eval_interval: 10
+    optimizer:
+      type: AdamW
+      params:
+        lr: 0.0001
+    scheduler:
+      type: LRListScheduler
+      params:
+        milestones:
+        - 160
+        lr_list:
+        - - 1e-05
+    snapshots:
+      max_snapshots: 5
+      save_epochs: 25
+      save_optimizer_state: false
+  train_settings:
+    batch_size: 16
+    dataloader_workers: 0
+    dataloader_pin_memory: false
+    display_iters: 500
+    epochs: 250
+device: auto
+metadata:
+  project_path: 
+    /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11
+  pose_config_path: 
+    /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/dlc-models-pytorch/iteration-0/demasoni_singlenucSep11-trainset95shuffle3/train/pytorch_config.yaml
+  bodyparts:
+  - nose
+  - leftEye
+  - rightEye
+  - stripe1
+  - stripe2
+  - stripe3
+  - stripe4
+  - tailBase
+  - tailTip
+  unique_bodyparts: []
+  individuals:
+  - individual1
+  - individual2
+  with_identity: false
+method: td
+model:
+  backbone:
+    type: ResNet
+    model_name: resnet50_gn
+    output_stride: 16
+    freeze_bn_stats: false
+    freeze_bn_weights: false
+  backbone_output_channels: 2048
+  heads:
+    bodypart:
+      type: HeatmapHead
+      weight_init: normal
+      predictor:
+        type: HeatmapPredictor
+        apply_sigmoid: false
+        clip_scores: true
+        location_refinement: true
+        locref_std: 7.2801
+      target_generator:
+        type: HeatmapGaussianGenerator
+        num_heatmaps: 9
+        pos_dist_thresh: 17
+        heatmap_mode: KEYPOINT
+        gradient_masking: true
+        background_weight: 0.0
+        generate_locref: true
+        locref_std: 7.2801
+      criterion:
+        heatmap:
+          type: WeightedMSECriterion
+          weight: 1.0
+        locref:
+          type: WeightedHuberCriterion
+          weight: 0.05
+      heatmap_config:
+        channels:
+        - 2048
+        kernel_size: []
+        strides: []
+        final_conv:
+          out_channels: 9
+          kernel_size: 1
+      locref_config:
+        channels:
+        - 2048
+        kernel_size: []
+        strides: []
+        final_conv:
+          out_channels: 18
+          kernel_size: 1
+net_type: resnet_50
+runner:
+  type: PoseTrainingRunner
+  gpus:
+  key_metric: test.mAP
+  key_metric_asc: true
+  eval_interval: 10
+  optimizer:
+    type: AdamW
+    params:
+      lr: 0.0005
+  scheduler:
+    type: LRListScheduler
+    params:
+      lr_list:
+      - - 0.0001
+      - - 1e-05
+      milestones:
+      - 90
+      - 120
+  snapshots:
+    max_snapshots: 5
+    save_epochs: 25
+    save_optimizer_state: false
+train_settings:
+  batch_size: 8
+  dataloader_workers: 0
+  dataloader_pin_memory: false
+  display_iters: 500
+  epochs: 200
+  seed: 42
