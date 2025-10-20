@@ -125,7 +125,7 @@ def cmd_analyze(args):
     """Run statistical analysis and generate plots."""
     from demba.analysis import Plotter
 
-    pm = ProjectManager(args.parent_dir)
+    pm = ProjectManager(args.project_dir)
     print(f"Analyzing data in: {pm.project_dir}")
     plotter = Plotter(
         project_manager=pm,
@@ -200,11 +200,11 @@ def cmd_full(args):
     cmd_visualize(args)
 
     # Step 7: Analysis
-    if args.parent_dir:
+    if args.project_dir:
         print("\n[7/7] Running analysis...")
         cmd_analyze(args)
     else:
-        print("\n[7/7] Skipping analysis (no parent directory specified)")
+        print("\n[7/7] Skipping analysis (no project directory specified)")
 
     print("\n" + "="*60)
     print("Full pipeline complete!")
@@ -214,6 +214,279 @@ def cmd_full(args):
     status = trial_manager.get_completion_status()
     completed_stages = sum(1 for s in status.values() if s)
     print(f"\nCompleted {completed_stages}/{len(status)} pipeline stages")
+    print("="*60)
+
+
+def cmd_batch(args):
+    """Run batch pipeline on multiple trials with batched interactive ID assignment."""
+    from demba.utils.gen_utils import (
+        save_batch_metadata, load_batch_metadata,
+        save_batch_cluster_mapping, load_batch_cluster_mapping,
+        reconstruct_prep_data
+    )
+    from demba.identity_correction import train_id_model, map_clusters_to_sex, assign_corrected_ids
+
+    print("="*60)
+    print("Batch Mode - Multi-Trial Pipeline")
+    print("="*60)
+
+    # Initialize ProjectManager
+    pm = ProjectManager(
+        project_dir=args.project_dir,
+        shuffle=args.shuffle,
+        training_fraction=config.DEFAULT_TRAINING_FRACTION
+    )
+
+    print(f"Project directory: {pm.project_dir}")
+    print(f"Config file: {pm.config_path}")
+    print(f"Videos directory: {pm.videos_dir}")
+
+    # Find quivering annotations if not provided
+    quivering_annotations = args.quivering_annotations
+    if quivering_annotations is None:
+        quivering_annotations = pm.find_quivering_annotations()
+        if quivering_annotations:
+            print(f"Found annotations: {quivering_annotations}")
+        else:
+            print("No quivering annotations found")
+
+    # Get all trial directories
+    trial_dirs = pm.list_trial_dirs()
+
+    if not trial_dirs:
+        raise ValueError(f"No valid trial directories found in {pm.videos_dir}")
+
+    print(f"Found {len(trial_dirs)} trials to process")
+    for td in trial_dirs:
+        print(f"  - {td.name}")
+    print()
+
+    # =========================================================================
+    # PHASE 1: Preparation (non-interactive)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("PHASE 1: Preparation (Pose + ID Model Training)")
+    print("="*60 + "\n")
+
+    phase1_completed = []
+    phase1_failed = []
+
+    for i, trial_dir in enumerate(trial_dirs, 1):
+        print(f"\n[{i}/{len(trial_dirs)}] Processing {trial_dir.name}...")
+
+        try:
+            # Create TrialManager using ProjectManager's config
+            tm = TrialManager(
+                trial_dir=trial_dir,
+                config_path=pm.config_path,
+                shuffle=args.shuffle,
+                training_fraction=config.DEFAULT_TRAINING_FRACTION
+            )
+
+            # Check if pose estimation is complete
+            if not tm.is_stage_complete('pose_estimation'):
+                print(f"  Running pose estimation...")
+                # Create a copy of args with video path set
+                import argparse as ap
+                args_copy = ap.Namespace(**vars(args))
+                args_copy.video = tm.video_path()
+                args_copy.dlc_config = pm.config_path
+                cmd_pose(args_copy)
+            else:
+                print(f"  Pose estimation already complete")
+
+            # Check if ID model training already done
+            id_correction_dir = tm.id_correction_dir()
+            id_correction_dir.mkdir(exist_ok=True)
+            metadata = load_batch_metadata(id_correction_dir)
+
+            if metadata is not None:
+                print(f"  ID model training already complete")
+            else:
+                print(f"  Training ID model...")
+                prep_data = train_id_model(
+                    tracklet_path=tm.el_pickle_path(),
+                    n_epochs=args.n_epochs,
+                    batch_size=args.batch_size,
+                    lr=args.lr,
+                    patch_size=args.patch_size,
+                    padding=args.padding,
+                    conf_threshold=args.conf_threshold,
+                    device=args.device,
+                    force_retrain=args.force_retrain,
+                    min_tracklet_length=args.min_length,
+                    frame_stride=args.cache_frame_stride
+                )
+
+                if prep_data is None:
+                    raise ValueError("ID training returned None (may have been skipped)")
+
+                # Save lightweight metadata
+                save_batch_metadata(prep_data, id_correction_dir)
+                print(f"  Metadata saved")
+
+            phase1_completed.append(trial_dir)
+
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            phase1_failed.append((trial_dir, str(e)))
+            continue
+
+    print(f"\nPhase 1 Summary: {len(phase1_completed)}/{len(trial_dirs)} trials completed")
+    if phase1_failed:
+        print(f"  Failed trials:")
+        for trial_dir, error in phase1_failed:
+            print(f"    - {trial_dir.name}: {error}")
+
+    if not phase1_completed:
+        print("\nNo trials completed Phase 1. Exiting.")
+        return
+
+    # =========================================================================
+    # PHASE 2: Interactive ID Assignment (batched)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("PHASE 2: Interactive Cluster Mapping (All Trials)")
+    print("="*60 + "\n")
+
+    phase2_completed = []
+
+    for i, trial_dir in enumerate(phase1_completed, 1):
+        print(f"\n[{i}/{len(phase1_completed)}] Mapping clusters for {trial_dir.name}...")
+
+        try:
+            tm = TrialManager(
+                trial_dir=trial_dir,
+                config_path=pm.config_path,
+                shuffle=args.shuffle,
+                training_fraction=config.DEFAULT_TRAINING_FRACTION
+            )
+            id_correction_dir = tm.id_correction_dir()
+
+            # Check if mapping already exists
+            cluster_mapping = load_batch_cluster_mapping(id_correction_dir)
+            if cluster_mapping is not None:
+                print(f"  Cluster mapping already exists: {cluster_mapping}")
+                phase2_completed.append(trial_dir)
+                continue
+
+            # Load metadata and reconstruct prep_data
+            metadata = load_batch_metadata(id_correction_dir)
+            prep_data = reconstruct_prep_data(
+                metadata,
+                patch_size=args.patch_size,
+                padding=args.padding,
+                conf_threshold=args.conf_threshold,
+                device=args.device
+            )
+
+            # Interactive mapping (user input)
+            cluster_mapping = map_clusters_to_sex(prep_data)
+
+            # Save mapping
+            save_batch_cluster_mapping(cluster_mapping, id_correction_dir)
+            print(f"  Mapping saved: {cluster_mapping}")
+
+            phase2_completed.append(trial_dir)
+
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            continue
+
+    print(f"\nPhase 2 Summary: {len(phase2_completed)}/{len(phase1_completed)} trials completed")
+
+    if not phase2_completed:
+        print("\nNo trials completed Phase 2. Exiting.")
+        return
+
+    # =========================================================================
+    # PHASE 3: Finalization (non-interactive)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("PHASE 3: Finalization (ID Assignment + Remaining Pipeline)")
+    print("="*60 + "\n")
+
+    for i, trial_dir in enumerate(phase2_completed, 1):
+        print(f"\n[{i}/{len(phase2_completed)}] Finalizing {trial_dir.name}...")
+
+        try:
+            tm = TrialManager(
+                trial_dir=trial_dir,
+                config_path=pm.config_path,
+                shuffle=args.shuffle,
+                training_fraction=config.DEFAULT_TRAINING_FRACTION
+            )
+            id_correction_dir = tm.id_correction_dir()
+
+            # Load metadata and reconstruct prep_data
+            metadata = load_batch_metadata(id_correction_dir)
+            prep_data = reconstruct_prep_data(
+                metadata,
+                patch_size=args.patch_size,
+                padding=args.padding,
+                conf_threshold=args.conf_threshold,
+                device=args.device
+            )
+
+            # Load cluster mapping
+            cluster_mapping = load_batch_cluster_mapping(id_correction_dir)
+
+            # Assign corrected IDs
+            if not tm.is_stage_complete('identity_correction'):
+                print(f"  Assigning corrected IDs...")
+                assign_corrected_ids(prep_data, cluster_mapping, min_silhouette=args.min_silhouette)
+            else:
+                print(f"  ID assignment already complete")
+
+            # Run remaining pipeline stages
+            import argparse as ap
+            args_copy = ap.Namespace(**vars(args))
+            args_copy.video = tm.video_path()
+            args_copy.dlc_config = pm.config_path
+            args_copy.quivering_annotations = quivering_annotations
+
+            if not tm.is_stage_complete('tracklet_stitching'):
+                print(f"  Stitching tracklets...")
+                cmd_stitch(args_copy)
+            else:
+                print(f"  Stitching already complete")
+
+            if not tm.is_stage_complete('filtering'):
+                print(f"  Filtering...")
+                cmd_filter(args_copy)
+            else:
+                print(f"  Filtering already complete")
+
+            if not tm.is_stage_complete('feature_extraction'):
+                print(f"  Extracting features...")
+                cmd_features(args_copy)
+            else:
+                print(f"  Feature extraction already complete")
+
+            if not tm.is_stage_complete('visualization'):
+                print(f"  Creating visualizations...")
+                cmd_visualize(args_copy)
+            else:
+                print(f"  Visualization already complete")
+
+            print(f"  {trial_dir.name} complete!")
+
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    # =========================================================================
+    # Analysis (always run since we have ProjectManager)
+    # =========================================================================
+    print("\n" + "="*60)
+    print("Running Project-Level Analysis")
+    print("="*60 + "\n")
+    cmd_analyze(args)
+
+    print("\n" + "="*60)
+    print("Batch Mode Complete!")
     print("="*60)
 
 
@@ -232,6 +505,7 @@ Pipeline stages (in order):
   6. visualize     - Create labeled videos
   7. analyze       - Generate statistical plots
   8. full          - Run complete pipeline end-to-end
+  9. batch         - Run pipeline on multiple trials with batched ID assignment
 
 Examples:
   # Run pose estimation
@@ -240,11 +514,14 @@ Examples:
   # Run identity correction (all paths inferred from video + config)
   python main.py id-correction --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
 
-  # Run full pipeline
+  # Run full pipeline on single trial
   python main.py full --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
 
+  # Run batch mode on multiple trials (interactive ID assignment done in one sitting)
+  python main.py batch --project-dir /path/to/project/Analysis
+
   # Run analysis on project
-  python main.py analyze --parent-dir /path/to/project
+  python main.py analyze --project-dir /path/to/project
         """
     )
 
@@ -317,7 +594,7 @@ Examples:
 
     # ========== ANALYSIS ==========
     analyze_parser = subparsers.add_parser('analyze', help='Run statistical analysis')
-    analyze_parser.add_argument('--parent-dir', required=True, type=Path, help='Parent directory containing Videos and Annotations')
+    analyze_parser.add_argument('--project-dir', required=True, type=Path, help='Project directory containing Videos and Annotations')
     analyze_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default='all', help='Types of plots to generate')
     analyze_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM, help='Mouthing distance threshold (mm)')
     analyze_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD, help='Minimum keypoint likelihood')
@@ -329,7 +606,7 @@ Examples:
     full_parser = subparsers.add_parser('full', help='Run complete pipeline')
     full_parser.add_argument('--video', required=True, type=Path, help='Path to video file')
     full_parser.add_argument('--dlc-config', required=True, type=Path, help='Path to DeepLabCut config.yaml')
-    full_parser.add_argument('--parent-dir', type=Path, help='Parent directory for analysis stage')
+    full_parser.add_argument('--project-dir', type=Path, help='Project directory for analysis stage')
     full_parser.add_argument('--quivering-annotations', type=Path, help='Path to quivering annotations')
 
     # Parameters (use defaults from config)
@@ -360,6 +637,48 @@ Examples:
                             help='Sample every Nth frame for patch cache (higher = less memory, default: 5)')
 
     full_parser.set_defaults(func=cmd_full)
+
+    # ========== BATCH MODE ==========
+    batch_parser = subparsers.add_parser('batch',
+        help='Run pipeline on multiple trials with batched interactive ID assignment')
+
+    # Required arguments
+    batch_parser.add_argument('--project-dir', required=True, type=Path,
+        help='Project directory (contains Videos/ and Annotations/ subdirs)')
+
+    # Optional arguments
+    batch_parser.add_argument('--quivering-annotations', type=Path,
+        help='Path to quivering annotations Excel file (auto-detected if not provided)')
+
+    # Pipeline parameters (same as full mode, all with config defaults)
+    batch_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE)
+    batch_parser.add_argument('--n-fish', type=int, default=config.DEFAULT_N_FISH)
+    batch_parser.add_argument('--n-tracks', type=int, default=config.DEFAULT_N_FISH)
+    batch_parser.add_argument('--min-length', type=int, default=config.DEFAULT_MIN_TRACKLET_LENGTH)
+    batch_parser.add_argument('--animal-names', nargs='+')
+    batch_parser.add_argument('--min-likelihood', type=float, default=config.DEFAULT_MIN_LIKELIHOOD)
+    batch_parser.add_argument('--n-minutes', type=int, default=config.DEFAULT_N_MINUTES)
+    batch_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM)
+    batch_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH)
+    batch_parser.add_argument('--force', action='store_true')
+    batch_parser.add_argument('--visualize', type=bool, default=True)
+    batch_parser.add_argument('--plots', nargs='+',
+        choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
+
+    # ID correction parameters
+    batch_parser.add_argument('--n-epochs', type=int, default=config.DEFAULT_ID_N_EPOCHS)
+    batch_parser.add_argument('--batch-size', type=int, default=config.DEFAULT_ID_BATCH_SIZE)
+    batch_parser.add_argument('--lr', type=float, default=config.DEFAULT_ID_LEARNING_RATE)
+    batch_parser.add_argument('--patch-size', type=int, default=config.DEFAULT_PATCH_SIZE)
+    batch_parser.add_argument('--padding', type=int, default=config.DEFAULT_PADDING)
+    batch_parser.add_argument('--conf-threshold', type=float, default=config.DEFAULT_CONF_THRESHOLD)
+    batch_parser.add_argument('--device', choices=['cuda', 'cpu'], default=config.DEFAULT_ID_DEVICE)
+    batch_parser.add_argument('--force-retrain', action='store_true')
+    batch_parser.add_argument('--min-silhouette', type=float, default=config.DEFAULT_MIN_SILHOUETTE)
+    batch_parser.add_argument('--cache-frame-stride', type=int, default=config.DEFAULT_ID_CACHE_FRAME_STRIDE,
+        help='Sample every Nth frame for patch cache (higher = less memory, default: 5)')
+
+    batch_parser.set_defaults(func=cmd_batch)
 
     # Parse arguments
     if len(sys.argv) == 1:

@@ -414,6 +414,8 @@ class ProjectManager:
         Path to project config.yaml
     videos_dir : Path
         Path to Videos/ subdirectory
+    annotations_dir : Path
+        Path to Annotations/ subdirectory (optional)
     shuffle : int
         DLC shuffle number
     training_fraction : float
@@ -451,6 +453,9 @@ class ProjectManager:
             raise FileNotFoundError(
                 f"Videos directory not found: {self.videos_dir}"
             )
+
+        # Annotations directory (optional)
+        self.annotations_dir = self.project_dir / 'Annotations'
 
         # Load defaults from config
         if shuffle is None:
@@ -603,6 +608,32 @@ class ProjectManager:
             completed = sum(1 for tm in all_trials if tm.is_stage_complete(stage))
             total = len(all_trials)
             print(f"  {stage:<25}: {completed}/{total} trials")
+
+    def find_quivering_annotations(self) -> Optional[Path]:
+        """
+        Find quivering annotations file in Annotations directory.
+
+        Looks for Excel files (.xlsx) containing 'quiver' in the name.
+
+        Returns
+        -------
+        Path or None
+            Path to annotations file, or None if not found
+        """
+        if not self.annotations_dir.exists():
+            return None
+
+        # Look for xlsx files with 'quiver' in name
+        annotation_files = list(self.annotations_dir.glob('*quiver*.xlsx'))
+        if annotation_files:
+            return annotation_files[0]  # Return first match
+
+        # Fallback: any xlsx file in Annotations
+        annotation_files = list(self.annotations_dir.glob('*.xlsx'))
+        if annotation_files:
+            return annotation_files[0]
+
+        return None
 
     def __repr__(self):
         """String representation."""

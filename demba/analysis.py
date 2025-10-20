@@ -28,8 +28,7 @@ class Plotter:
         self.project_manager = project_manager
 
         # Set up paths
-        self.parent_dir = project_manager.project_dir.parent
-        self.annotation_path = self.parent_dir / 'Annotations' / 'Annotations.xlsx'
+        self.project_dir = project_manager.project_dir
 
         # Load defaults from config
         if mouthing_dist_mm is None:
@@ -44,7 +43,7 @@ class Plotter:
         if n_minutes is not None:
             self.param_suffix += f"_last{n_minutes}min"
 
-        self.output_dir = self.parent_dir / 'Summary'
+        self.output_dir = self.project_dir / 'Summary'
         self.output_dir.mkdir(exist_ok=True)
         self.data_dir = project_manager.videos_dir
         self.bhve_dirs, self.ctrl_dirs = self.get_bhve_ctrl_dir_paths()

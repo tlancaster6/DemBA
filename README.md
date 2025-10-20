@@ -69,22 +69,52 @@ Core dependencies include:
 
 ## Quick Start
 
+### Recommended Project Structure
+
+DemBA expects a specific project structure for optimal functionality. While some operations may work with non-standard layouts, **using the recommended structure is strongly advised** for full pipeline compatibility:
+
+```
+MyProject/
+├── config.yaml                    # DeepLabCut project config
+└── Analysis_<date>/               # Analysis directory (can be any name)
+    ├── Videos/                    # Required: Trial video directories
+    │   ├── trial1/               # Each trial in its own directory
+    │   │   ├── trial1.mp4        # Video file (name matches directory)
+    │   │   ├── trial1_roi.png    # ROI image (optional)
+    │   │   └── ...               # Pipeline outputs created here
+    │   ├── trial2/
+    │   │   ├── trial2.mp4
+    │   │   └── ...
+    │   └── ...
+    └── Annotations/               # Optional: Manual annotations
+        └── quivering_annotations.xlsx  # Auto-detected by batch mode
+```
+
+**Key Requirements:**
+- `config.yaml` must be in or above the Analysis directory
+- Each trial must be in its own subdirectory under `Videos/`
+- Video filename must match the directory name (e.g., `trial1/trial1.mp4`)
+- Annotations directory is optional but auto-detected if present
+
 ### Command Line Interface
 
-DemBA provides a comprehensive CLI with modular stages and a full pipeline mode.
+DemBA provides a comprehensive CLI with modular stages, full pipeline mode, and batch mode.
 
 ```bash
-# Run full pipeline end-to-end
-python main.py full --video data/trial1.mp4 --dlc-config config.yaml
+# Run full pipeline on a single trial
+python main.py full --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+
+# Run batch mode on multiple trials (recommended for projects with many videos)
+python main.py batch --project-dir /path/to/MyProject/Analysis_<date>
 
 # Run individual stages
-python main.py pose --video data/trial1.mp4 --dlc-config config.yaml
-python main.py id-correction --tracklet-pickle data/trial1_el.pickle
-python main.py stitch --tracklet-pickle data/trial1_el.pickle --output-h5 data/trial1_el.h5
-python main.py filter --video data/trial1.mp4 --dlc-config config.yaml
-python main.py features --video data/trial1.mp4 --pose-h5 data/trial1_el.h5
-python main.py visualize --video data/trial1.mp4 --dlc-config config.yaml
-python main.py analyze --parent-dir data/ --plots all
+python main.py pose --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py id-correction --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py stitch --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py filter --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py features --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py visualize --video Videos/trial1/trial1.mp4 --dlc-config config.yaml
+python main.py analyze --project-dir /path/to/MyProject/Analysis_<date>
 ```
 
 ### Python API
@@ -119,6 +149,8 @@ demba.process_video(
 ```
 
 ## Pipeline Stages
+
+DemBA provides 8 modular stages that can be run individually or combined via `full` (single trial) or `batch` (multiple trials) modes.
 
 ### 1. Pose Estimation
 Runs standard DeepLabCut multi-animal pose estimation (dlc.analyze_videos) and simple SORT-style stitching 
@@ -191,11 +223,46 @@ python main.py visualize --video trial1.mp4 --dlc-config config.yaml
 ```
 
 ### 7. Analysis
-Generates statistical plots and correlation analyses.
+Generates statistical plots and correlation analyses across all trials in a project.
 
 ```bash
-python main.py analyze --parent-dir data/ --plots boxplots correlation heatmaps
+python main.py analyze --project-dir /path/to/MyProject/Analysis
 ```
+
+### 8. Batch Mode
+
+**The Challenge**: When processing many videos, running the full pipeline sequentially requires you to be present for the interactive ID assignment step of each video, which interrupts the workflow.
+
+**Batch Mode Solution**: Separates the pipeline into three phases:
+1. **Phase 1 (Preparation)**: Runs pose estimation and ID model training for all videos (non-interactive, can run overnight)
+2. **Phase 2 (Interactive)**: Interactive cluster mapping for all videos in one sitting
+3. **Phase 3 (Finalization)**: Completes remaining pipeline stages for all videos (non-interactive)
+
+This allows you to complete all interactive tasks at once, then let the rest run unattended.
+
+**Usage**:
+```bash
+# Process entire project with one command
+python main.py batch --project-dir /path/to/MyProject/Analysis
+
+# Optional: manually specify annotations file
+python main.py batch --project-dir /path/to/MyProject/Analysis \
+    --quivering-annotations custom_annotations.xlsx
+```
+
+**Features**:
+- Automatically discovers all trials in `Videos/` directory
+- Auto-detects config file and annotations
+- Tracks completion status per trial - can resume if interrupted
+- Skips already-completed stages automatically
+- Runs project-level analysis at the end
+
+**When to Use**:
+- ✅ Multiple videos to process (>3 trials)
+- ✅ Want to minimize interactive time
+- ✅ Processing overnight or on remote server
+- ❌ Single trial (use `full` mode instead)
+- ❌ Need fine control over individual stages
 
 ## Identity Correction: Technical Details
 
@@ -483,7 +550,7 @@ VIDEO_FPS = 30
 
 Parameters can be overridden via command-line arguments.
 
-## Project Structure
+## Code Structure
 
 ```
 DemBA/
@@ -494,10 +561,13 @@ DemBA/
 │   ├── filtering.py            # Temporal filtering
 │   ├── feature_extraction.py   # Behavioral feature detection
 │   ├── visualization.py        # Video visualization
+│   ├── analysis.py             # Statistical analysis
+│   ├── file_manager.py         # TrialManager & ProjectManager
 │   ├── config.py               # Configuration constants
 │   └── utils/                  # Utility functions
 │       ├── dlc.py              # DeepLabCut helpers
 │       ├── roi.py              # ROI estimation
+│       ├── gen_utils.py        # Batch mode utilities
 │       └── metrics.py          # Evaluation metrics
 ├── main.py                     # CLI entry point
 ├── setup.py                    # Package installation

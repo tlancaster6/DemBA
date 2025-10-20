@@ -630,7 +630,7 @@ def build_patch_cache(tracklets, co_occupancy_frames, patch_extractor, cache_pat
 
 
 def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
-                 n_epochs=200, batch_size=64, lr=0.001, device='cuda', min_tracklet_length=60,
+                 n_epochs=200, batch_size=32, lr=0.001, device='cuda', min_tracklet_length=60,
                  frame_stride=5, warmup_epochs=10):
     """
     Train CNN encoder with triplet loss.
@@ -676,7 +676,7 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
 
     # Learning rate scheduler - reduces LR when loss plateaus
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
+        optimizer, mode='min', factor=0.5, patience=15, min_lr=1e-6
     )
 
     # Build patch cache to speed up training
@@ -703,7 +703,7 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
     best_loss = float('inf')
     best_model_state = None
     patience_counter = 0
-    early_stop_patience = 10  # Stop if no improvement for 10 epochs
+    early_stop_patience = 20  # Stop if no improvement for 10 epochs
     min_delta = 1e-4  # Minimum change to qualify as improvement
 
     for epoch in range(n_epochs):
@@ -736,6 +736,7 @@ def train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
 
             loss = criterion(anchor_emb, pos_emb, neg_emb)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             epoch_losses.append(loss.item())
@@ -910,10 +911,57 @@ def cluster_and_assign_ids(embeddings, n_clusters=2):
     return embeddings, kmeans
 
 
-def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
-                               n_segments=None, segment_duration_sec=None, fps=None):
+def compute_segment_co_occupancy_ratio(frame_start, frame_end, tracklet_idx, tracklets):
     """
-    Create a video showing trajectory segments from each cluster for user to map to male/female.
+    Compute the ratio of frames in a segment where 2 animals are in frame.
+
+    Parameters
+    ----------
+    frame_start : int
+        Starting frame index of the segment
+    frame_end : int
+        Ending frame index of the segment
+    tracklet_idx : int
+        Index of the tracklet being evaluated
+    tracklets : list of Tracklet
+        All tracklets in the video
+
+    Returns
+    -------
+    float
+        Ratio of frames with exactly 2 tracklets present (0.0 to 1.0)
+    """
+    # Build frame-to-tracklets mapping for the segment range
+    frame_to_tracklets = {}
+    for t_idx, tracklet in enumerate(tracklets):
+        for frame in tracklet.inds:
+            if frame_start <= frame <= frame_end:
+                if frame not in frame_to_tracklets:
+                    frame_to_tracklets[frame] = []
+                frame_to_tracklets[frame].append(t_idx)
+
+    # Count frames with exactly 2 tracklets
+    segment_frames = set(range(frame_start, frame_end + 1))
+    segment_frames_in_tracklet = set(tracklets[tracklet_idx].inds) & segment_frames
+
+    if len(segment_frames_in_tracklet) == 0:
+        return 0.0
+
+    co_occupancy_count = sum(
+        1 for frame in segment_frames_in_tracklet
+        if frame in frame_to_tracklets and len(frame_to_tracklets[frame]) == 2
+    )
+
+    return co_occupancy_count / len(segment_frames_in_tracklet)
+
+
+def prepare_cluster_comparison_video(embeddings, tracklets, patch_extractor,
+                                    n_segments=None, segment_duration_sec=None, fps=None):
+    """
+    Create a video showing trajectory segments from each cluster (non-interactive preparation step).
+
+    This function performs all the heavy video processing work upfront, before user interaction.
+    It should be called during the model training phase (Phase 1 in batch mode).
 
     Parameters
     ----------
@@ -932,8 +980,8 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
 
     Returns
     -------
-    mapping : dict
-        Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
+    output_path : Path
+        Path to the created comparison video
     """
     if n_segments is None:
         n_segments = config.DEFAULT_ID_N_SEGMENTS
@@ -963,16 +1011,26 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
         # Assign to cluster if >70% of frames belong to it
         for cluster_id in [0, 1]:
             if cluster_counts[cluster_id] / total > 0.7:
+                tracklet = tracklets[t_idx]
+                frame_start = tracklet.inds[0]
+                frame_end = tracklet.inds[-1]
+
+                # Compute co-occupancy ratio for this tracklet
+                co_occupancy_ratio = compute_segment_co_occupancy_ratio(
+                    frame_start, frame_end, t_idx, tracklets
+                )
+
                 cluster_tracklets[cluster_id].append({
                     'tracklet_idx': t_idx,
                     'purity': cluster_counts[cluster_id] / total,
-                    'length': len(tracklets[t_idx])
+                    'length': len(tracklets[t_idx]),
+                    'co_occupancy_ratio': co_occupancy_ratio
                 })
 
-    # Sort by purity and length
+    # Sort by purity, co-occupancy ratio, and length
     for cluster_id in [0, 1]:
         cluster_tracklets[cluster_id].sort(
-            key=lambda x: (x['purity'], x['length']),
+            key=lambda x: (x['purity'], x['co_occupancy_ratio'], x['length']),
             reverse=True
         )
 
@@ -1124,14 +1182,34 @@ def interactive_cluster_mapping(embeddings, tracklets, patch_extractor,
     patch_extractor.close_video()
 
     print(f"\nCluster comparison video saved to: {output_path}")
-    print("Please review the video to identify which cluster is male/female.\n")
 
-    # Get user input
-    print("=" * 60)
+    return output_path
+
+
+def interactive_cluster_mapping(output_path):
+    """
+    Prompt user to map clusters to biological sex (interactive input only).
+
+    This function only handles the user input portion, making it fast and suitable
+    for batched interaction. The video should already be created using
+    prepare_cluster_comparison_video().
+
+    Parameters
+    ----------
+    output_path : Path
+        Path to the cluster comparison video created by prepare_cluster_comparison_video()
+
+    Returns
+    -------
+    mapping : dict
+        Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
+    """
+    print("\n" + "=" * 60)
     print("Cluster Mapping")
     print("=" * 60)
-    print(f"\nVideo saved to: {output_path}")
-    print("Left panel = Cluster 0, Right panel = Cluster 1\n")
+    print(f"\nVideo location: {output_path}")
+    print("Left panel = Cluster 0, Right panel = Cluster 1")
+    print("Please review the video to identify which cluster is male/female.\n")
 
     mapping = {}
     for cluster_id in [0, 1]:
@@ -1589,10 +1667,148 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
     print(f"\nSummary statistics saved to: {report_path}")
 
 
+def assign_male_only_ids(tracklets, header, tracklet_path, output_dir, n_co_occupancy_frames, min_co_occupancy_threshold):
+    """
+    Assign all detections to male (ID=0) when co-occupancy is insufficient for triplet training.
+
+    This fallback is appropriate for trials where one sex (typically female) is rarely or never
+    visible, making it impossible to train a reliable triplet loss model.
+
+    Parameters
+    ----------
+    tracklets : list of Tracklet
+        Original tracklets
+    header : DataFrame
+        Header from original pickle
+    tracklet_path : Path
+        Path to original pickle file (will be replaced)
+    output_dir : Path
+        Directory to save backup and summary report
+    n_co_occupancy_frames : int
+        Number of co-occupancy frames detected
+    min_co_occupancy_threshold : int
+        Threshold that triggered the fallback
+
+    Returns
+    -------
+    None
+    """
+    import shutil
+    from datetime import datetime
+
+    print("\nApplying male-only ID assignment...")
+
+    # Ensure paths are absolute
+    tracklet_path = Path(tracklet_path).resolve()
+    output_dir = Path(output_dir).resolve()
+
+    # Create corrected data structure matching original format
+    corrected_data = {'header': header}
+
+    # Counter for statistics
+    total_detections = 0
+
+    # Process each tracklet - assign all to male (ID=0)
+    for t_idx, tracklet in enumerate(tracklets):
+        tracklet_dict = {}
+
+        for local_idx, frame in enumerate(tracklet.inds):
+            # Copy original data
+            frame_data = tracklet.data[local_idx].copy()
+
+            # Ensure data has ID column
+            if frame_data.shape[1] == 3:
+                id_col = np.full((frame_data.shape[0], 1), 0.0)  # All male
+                frame_data = np.hstack([frame_data, id_col])
+            else:
+                # Set all to male
+                frame_data[:, 3] = 0.0
+
+            total_detections += 1
+
+            # Store with frame key
+            frame_key = f"frame{frame:06d}"
+            tracklet_dict[frame_key] = frame_data
+
+        # Add tracklet to corrected data
+        if tracklet_dict:
+            corrected_data[t_idx] = tracklet_dict
+
+    # Create backup of original file with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"backup_{timestamp}{tracklet_path.suffix}"
+    backup_path = output_dir / backup_filename
+
+    # Copy original to backup location
+    shutil.copy2(tracklet_path, backup_path)
+    print(f"Original tracklets backed up to: {backup_path}")
+
+    # Save corrected tracklets, replacing the original file
+    with open(tracklet_path, 'wb') as f:
+        pickle.dump(corrected_data, f)
+
+    print(f"Corrected tracklets saved to: {tracklet_path}")
+
+    # Print statistics
+    print(f"\nMale-Only ID Assignment Statistics:")
+    print(f"  Male (ID=0):        {total_detections:6d} detections (100.0%)")
+    print(f"  Female (ID=1):      {0:6d} detections (0.0%)")
+    print(f"  Total:              {total_detections:6d} detections")
+
+    # Generate summary report
+    report_path = output_dir / 'summary_statistics.txt'
+
+    with open(report_path, 'w') as f:
+        f.write("="*70 + "\n")
+        f.write("ID CORRECTION SUMMARY - MALE-ONLY FALLBACK\n")
+        f.write("="*70 + "\n\n")
+
+        f.write(f"Video: {tracklet_path.stem}\n")
+        f.write(f"Date: {np.datetime64('now')}\n\n")
+
+        f.write("-"*70 + "\n")
+        f.write("FALLBACK REASON\n")
+        f.write("-"*70 + "\n")
+        f.write(f"Co-occupancy frames detected: {n_co_occupancy_frames}\n")
+        f.write(f"Minimum threshold required:   {min_co_occupancy_threshold}\n\n")
+        f.write("Insufficient co-occupancy frames for reliable triplet loss training.\n")
+        f.write("This typically occurs when one individual (usually female) is rarely\n")
+        f.write("or never visible in the video (e.g., control trials).\n\n")
+
+        f.write("-"*70 + "\n")
+        f.write("FALLBACK STRATEGY\n")
+        f.write("-"*70 + "\n")
+        f.write("All detections assigned to male (ID=0).\n")
+        f.write("Any female detections (if present) are labeled as male.\n\n")
+
+        f.write("-"*70 + "\n")
+        f.write("TRACKLET STATISTICS\n")
+        f.write("-"*70 + "\n")
+        f.write(f"Number of tracklets:        {len(tracklets):8d}\n")
+        f.write(f"Total detections:           {total_detections:8d}\n\n")
+
+        f.write("-"*70 + "\n")
+        f.write("ID ASSIGNMENT STATISTICS\n")
+        f.write("-"*70 + "\n")
+        f.write(f"Male (ID=0):                {total_detections:8d} (100.0%)\n")
+        f.write(f"Female (ID=1):              {0:8d} (0.0%)\n")
+        f.write(f"Unassigned (ID=-1):         {0:8d} (0.0%)\n\n")
+
+        f.write("="*70 + "\n")
+        f.write("NOTE: This trial used male-only fallback due to insufficient\n")
+        f.write("co-occupancy. Standard triplet loss training was not performed.\n")
+        f.write("="*70 + "\n")
+
+    print(f"\nSummary report saved to: {report_path}")
+    print("\n" + "="*60)
+    print("Male-only ID assignment complete!")
+    print("="*60)
+
+
 def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
                    patch_size=None, padding=None, conf_threshold=None,
                    device=None, force_retrain=False, min_tracklet_length=None,
-                   min_overlap_frames=None, frame_stride=None):
+                   min_overlap_frames=None, frame_stride=None, min_co_occupancy_frames=None):
     """
     Train ID correction model, extract embeddings, and perform clustering.
     This is substage 1 of ID correction: all non-interactive model training steps.
@@ -1625,6 +1841,9 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
         Set to 0 to include all co-occupancy frames. (default: from config)
     frame_stride : int, optional
         Sample every Nth frame for patch cache (default: from config)
+    min_co_occupancy_frames : int, optional
+        Minimum total co-occupancy frames required to run triplet training. If below this
+        threshold, falls back to male-only ID assignment (default: from config)
 
     Returns
     -------
@@ -1659,6 +1878,8 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
         min_tracklet_length = config.DEFAULT_MIN_TRACKLET_LENGTH
     if min_overlap_frames is None:
         min_overlap_frames = config.DEFAULT_MIN_OVERLAP_FRAMES
+    if min_co_occupancy_frames is None:
+        min_co_occupancy_frames = config.DEFAULT_MIN_CO_OCCUPANCY_FRAMES
 
     # Setup paths
     tracklet_path = Path(tracklet_path)
@@ -1737,13 +1958,31 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
         print("Detecting co-occupancy frames...")
         detector = CoOccupancyDetector(tracklets, min_conf=conf_threshold)
         co_occupancy_frames = detector.find_co_occupancy_frames(min_overlap_frames=min_overlap_frames)
-        print(f"Using {len(co_occupancy_frames)} co-occupancy frames for training\n")
+        print(f"Found {len(co_occupancy_frames)} co-occupancy frames\n")
 
-        if len(co_occupancy_frames) < 100:
-            print("WARNING: Very few co-occupancy frames found. Results may be unreliable.")
-            print("Continuing anyway...")
+        # Check if we have enough co-occupancy frames for reliable training
+        if len(co_occupancy_frames) < min_co_occupancy_frames:
+            print("="*60)
+            print("INSUFFICIENT CO-OCCUPANCY FOR ID TRAINING")
+            print("="*60)
+            print(f"Co-occupancy frames: {len(co_occupancy_frames)} (threshold: {min_co_occupancy_frames})\n")
+            print("This trial has too few frames where both animals are visible")
+            print("simultaneously. Training the triplet loss model would be unreliable.\n")
+            print("Falling back to male-only ID assignment:")
+            print("  - All detections will be assigned ID=0 (male)")
+            print("  - Any female detections (if present) will be labeled as male")
+            print("  - This is appropriate for control trials with minimal female presence\n")
+            print("="*60 + "\n")
+
+            # Apply male-only fallback
+            assign_male_only_ids(tracklets, header, tracklet_path, output_dir,
+                               len(co_occupancy_frames), min_co_occupancy_frames)
+
+            # Return None to signal that standard pipeline should be skipped
+            return None
 
         # Train encoder
+        print(f"Sufficient co-occupancy detected. Proceeding with triplet loss training...\n")
         print("\nTraining encoder...")
         model = train_encoder(tracklets, co_occupancy_frames, patch_extractor, output_dir,
                              n_epochs=n_epochs, batch_size=batch_size,
@@ -1773,6 +2012,11 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
     embeddings, kmeans = cluster_and_assign_ids(embeddings, n_clusters=2)
     print()
 
+    # Prepare cluster comparison video (non-interactive, done upfront)
+    print("Creating cluster comparison video...")
+    video_path_out = prepare_cluster_comparison_video(embeddings, tracklets, patch_extractor)
+    print()
+
     # Return all data needed for the interactive step
     prep_data = {
         'tracklets': tracklets,
@@ -1783,7 +2027,8 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
         'model': model,
         'tracklet_path': tracklet_path,
         'video_path': video_path,
-        'output_dir': output_dir
+        'output_dir': output_dir,
+        'comparison_video_path': video_path_out
     }
 
     print("Model training complete!")
@@ -1797,8 +2042,8 @@ def map_clusters_to_sex(prep_data):
     Interactively map clusters to biological sex (male/female).
     This is substage 2 of ID correction: the interactive portion requiring user input.
 
-    Creates a side-by-side comparison video showing trajectory segments from each cluster,
-    then prompts the user to identify which cluster corresponds to male vs female.
+    The comparison video should already be created by train_id_model(). This function
+    only prompts the user for input, making it very fast and suitable for batch mode.
 
     Parameters
     ----------
@@ -1813,6 +2058,7 @@ def map_clusters_to_sex(prep_data):
             - 'tracklet_path': Path to tracklet file
             - 'video_path': Path to video file
             - 'output_dir': Path to output directory
+            - 'comparison_video_path': Path to comparison video
 
     Returns
     -------
@@ -1820,11 +2066,9 @@ def map_clusters_to_sex(prep_data):
         Maps cluster ID to semantic label (e.g., {0: 'male', 1: 'female'})
     """
     # Unpack preparation data
-    tracklets = prep_data['tracklets']
-    embeddings = prep_data['embeddings']
-    patch_extractor = prep_data['patch_extractor']
     tracklet_path = prep_data['tracklet_path']
     video_path = prep_data['video_path']
+    comparison_video_path = prep_data['comparison_video_path']
 
     print("="*60)
     print("Interactive ID Correction - Cluster Mapping")
@@ -1833,9 +2077,9 @@ def map_clusters_to_sex(prep_data):
     print(f"Video file: {video_path.name}")
     print("="*60 + "\n")
 
-    # Interactive mapping
+    # Interactive mapping (just user input, video already created)
     print("Mapping clusters to individuals...")
-    cluster_mapping = interactive_cluster_mapping(embeddings, tracklets, patch_extractor)
+    cluster_mapping = interactive_cluster_mapping(comparison_video_path)
     print(f"Cluster mapping: {cluster_mapping}\n")
 
     return cluster_mapping
@@ -1913,7 +2157,7 @@ def assign_corrected_ids(prep_data, cluster_mapping, min_silhouette=None):
 def main(trial_manager, n_epochs=None, batch_size=None, lr=None, patch_size=None,
          padding=None, conf_threshold=None, device=None, force_retrain=False,
          min_silhouette=None, min_tracklet_length=None, min_overlap_frames=None,
-         frame_stride=None):
+         frame_stride=None, min_co_occupancy_frames=None):
     """
     Triplet loss-based ID correction for DeepLabCut tracklets.
 
@@ -1954,6 +2198,9 @@ def main(trial_manager, n_epochs=None, batch_size=None, lr=None, patch_size=None
         Set to 0 to include all co-occupancy frames. (default: from config)
     frame_stride : int, optional
         Sample every Nth frame for patch cache (default: from config)
+    min_co_occupancy_frames : int, optional
+        Minimum total co-occupancy frames required to run triplet training. If below this
+        threshold, falls back to male-only ID assignment (default: from config)
 
     Returns
     -------
@@ -1977,11 +2224,14 @@ def main(trial_manager, n_epochs=None, batch_size=None, lr=None, patch_size=None
         force_retrain=force_retrain,
         min_tracklet_length=min_tracklet_length,
         min_overlap_frames=min_overlap_frames,
-        frame_stride=frame_stride
+        frame_stride=frame_stride,
+        min_co_occupancy_frames=min_co_occupancy_frames
     )
 
     if prep_data is None:
-        # Training was skipped (e.g., already corrected)
+        # Training was skipped (e.g., already corrected or insufficient co-occupancy)
+        # Mark stage as complete even for fallback cases
+        trial_manager.mark_stage_complete('identity_correction')
         return None, None
 
     # Substage 2: Interactive cluster mapping
