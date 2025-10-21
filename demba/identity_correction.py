@@ -1027,12 +1027,25 @@ def prepare_cluster_comparison_video(embeddings, tracklets, patch_extractor,
                     'co_occupancy_ratio': co_occupancy_ratio
                 })
 
-    # Sort by purity, co-occupancy ratio, and length
+    # Compute composite score with equal weighting
     for cluster_id in [0, 1]:
-        cluster_tracklets[cluster_id].sort(
-            key=lambda x: (x['purity'], x['co_occupancy_ratio'], x['length']),
-            reverse=True
-        )
+        tracklet_list = cluster_tracklets[cluster_id]
+
+        if not tracklet_list:
+            continue
+
+        # Normalize length to [0, 1] range
+        max_length = max(x['length'] for x in tracklet_list)
+        min_length = min(x['length'] for x in tracklet_list)
+        length_range = max_length - min_length if max_length > min_length else 1
+
+        # Compute composite score: equal weights for purity, co_occupancy, and normalized length
+        for x in tracklet_list:
+            norm_length = (x['length'] - min_length) / length_range
+            x['score'] = (x['purity'] + x['co_occupancy_ratio'] + norm_length) / 3.0
+
+        # Sort by composite score
+        tracklet_list.sort(key=lambda x: x['score'], reverse=True)
 
     # Sample segments from top tracklets
     segment_frames = int(segment_duration_sec * fps)

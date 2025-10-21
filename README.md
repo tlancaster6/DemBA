@@ -336,6 +336,70 @@ Input: 128×128×3 RGB patch
 Output: 128-dimensional unit vector
 ```
 
+**Architecture Visualization:**
+```
+                           SimpleCNN Architecture
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         INPUT: 128×128×3                            │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   Conv2d (3 → 32)       │  kernel=3, padding=1
+                    │   BatchNorm2d(32)       │
+                    │   ReLU                  │
+                    │   MaxPool2d(2×2)        │
+                    └────────────┬────────────┘
+                                 │ 64×64×32
+                    ┌────────────▼────────────┐
+                    │   Conv2d (32 → 64)      │  kernel=3, padding=1
+                    │   BatchNorm2d(64)       │
+                    │   ReLU                  │
+                    │   MaxPool2d(2×2)        │
+                    └────────────┬────────────┘
+                                 │ 32×32×64
+                    ┌────────────▼────────────┐
+                    │   Conv2d (64 → 128)     │  kernel=3, padding=1
+                    │   BatchNorm2d(128)      │
+                    │   ReLU                  │
+                    │   MaxPool2d(2×2)        │
+                    └────────────┬────────────┘
+                                 │ 16×16×128
+                    ┌────────────▼────────────┐
+                    │   Conv2d (128 → 256)    │  kernel=3, padding=1
+                    │   BatchNorm2d(256)      │
+                    │   ReLU                  │
+                    │   MaxPool2d(2×2)        │
+                    └────────────┬────────────┘
+                                 │ 8×8×256
+                    ┌────────────▼────────────┐
+                    │   Flatten               │
+                    └────────────┬────────────┘
+                                 │ 16,384 features
+                    ┌────────────▼────────────┐
+                    │   Linear(16384 → 512)   │
+                    │   ReLU                  │
+                    │   Dropout(p=0.5)        │
+                    └────────────┬────────────┘
+                                 │ 512 features
+                    ┌────────────▼────────────┐
+                    │   Linear(512 → 128)     │
+                    └────────────┬────────────┘
+                                 │ 128 features
+                    ┌────────────▼────────────┐
+                    │   L2 Normalize          │
+                    └────────────┬────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────┐
+│               OUTPUT: 128-dim unit vector embedding                 │
+└─────────────────────────────────────────────────────────────────────┘
+
+Total Parameters: ~8.9M
+Input: RGB image patches (128×128×3)
+Output: L2-normalized embeddings (128-dim)
+Loss: Triplet loss with margin=1.0
+```
+
 The L2 normalization ensures embeddings lie on a hypersphere, making cosine/Euclidean distances equivalent and improving clustering.
 
 #### 5. Triplet Loss Training
