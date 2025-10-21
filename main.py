@@ -9,6 +9,11 @@ import argparse
 import sys
 from pathlib import Path
 
+# Set matplotlib backend to non-GUI before any matplotlib imports
+# This prevents tkinter-related threading issues in batch/headless mode
+import matplotlib
+matplotlib.use('Agg')
+
 import demba
 from demba import config
 from demba.file_manager import TrialManager, ProjectManager
