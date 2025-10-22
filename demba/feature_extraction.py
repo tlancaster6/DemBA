@@ -1048,8 +1048,8 @@ Extracts behavioral features from cichlid courtship videos with DeepLabCut pose 
         """
         ref_df = self.quivering_annotation_df.copy()
         ref_df = ref_df[['temporal_segment_start', 'temporal_segment_end', 'metadata']]
-        ref_df["temporal_segment_start"] = (ref_df["temporal_segment_start"]  * VIDEO_FPS).apply(np.round)
-        ref_df["temporal_segment_end"] = (ref_df["temporal_segment_end"]  * VIDEO_FPS).apply(np.round)
+        ref_df["temporal_segment_start"] = (pd.to_numeric(ref_df["temporal_segment_start"], errors='coerce') * VIDEO_FPS).round()
+        ref_df["temporal_segment_end"] = (pd.to_numeric(ref_df["temporal_segment_end"], errors='coerce') * VIDEO_FPS).round()
         ref_df["metadata"] = (ref_df["metadata"]).apply(self._clean_metadata_string)
 
         # Determine max frame from pose data if available, otherwise use a large default

@@ -1402,6 +1402,11 @@ def visualize_embeddings(embeddings, kmeans, cluster_mapping, output_dir, min_si
     from sklearn.decomposition import PCA
     from sklearn.manifold import TSNE
 
+    save_path = output_dir / 'embedding_visualization.png'
+    if save_path.exists():
+        print('embedding visualization already exists. Skipping')
+        return
+
     # Extract data
     emb_vectors = np.array([e['embedding'] for e in embeddings])
     clusters = np.array([e['cluster'] for e in embeddings])
@@ -1514,7 +1519,7 @@ def visualize_embeddings(embeddings, kmeans, cluster_mapping, output_dir, min_si
     plt.tight_layout(rect=[0, 0, 1, 0.99])
 
     # Save
-    save_path = output_dir / 'embedding_visualization.png'
+
     plt.savefig(save_path, dpi=200, bbox_inches='tight')
     plt.close()
 
@@ -1543,6 +1548,10 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
     video_name : str
         Name of the video
     """
+    report_path = output_dir / 'summary_statistics.txt'
+    if report_path.exists():
+        print('embedding summary already exists. Skipping')
+        return
     # Compute tracklet statistics
     tracklet_lengths = [len(t) for t in tracklets]
     n_tracklets = len(tracklets)
@@ -1591,7 +1600,7 @@ def save_summary_report(output_dir, tracklets, embeddings, cluster_mapping,
     embedding_coverage = n_embeddings / total if total > 0 else 0
 
     # Write report
-    report_path = output_dir / 'summary_statistics.txt'
+
 
     with open(report_path, 'w') as f:
         f.write("="*70 + "\n")
