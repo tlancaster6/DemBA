@@ -2025,6 +2025,10 @@ def train_id_model(tracklet_path, n_epochs=None, batch_size=None, lr=None,
     embeddings, kmeans = cluster_and_assign_ids(embeddings, n_clusters=2)
     print()
 
+    # Update cached embeddings with cluster information
+    with open(embeddings_path, 'wb') as f:
+        pickle.dump(embeddings, f)
+
     # Prepare cluster comparison video (non-interactive, done upfront)
     print("Creating cluster comparison video...")
     video_path_out = prepare_cluster_comparison_video(embeddings, tracklets, patch_extractor)
