@@ -625,7 +625,7 @@ Examples:
     full_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM)
     full_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH)
     full_parser.add_argument('--force', action='store_true')
-    full_parser.add_argument('--visualize', type=bool, default=True)
+    full_parser.add_argument('--visualize', type=bool, default=config.DEFAULT_VISUALIZE_FLAG)
     full_parser.add_argument('--plots', nargs='+', choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
 
     # ID correction parameters
@@ -666,7 +666,7 @@ Examples:
     batch_parser.add_argument('--mouthing-dist-mm', type=float, default=config.DEFAULT_MOUTHING_DIST_MM)
     batch_parser.add_argument('--bin-width', type=int, default=config.DEFAULT_ANALYSIS_BIN_WIDTH)
     batch_parser.add_argument('--force', action='store_true')
-    batch_parser.add_argument('--visualize', type=bool, default=True)
+    batch_parser.add_argument('--visualize', type=bool, default=config.DEFAULT_VISUALIZE_FLAG)
     batch_parser.add_argument('--plots', nargs='+',
         choices=['boxplots', 'correlation', 'heatmaps', 'all'], default=['all'])
 

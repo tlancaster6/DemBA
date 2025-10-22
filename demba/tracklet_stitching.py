@@ -7,6 +7,7 @@ by partitioning tracklets by ID before stitching.
 
 import numpy as np
 from pathlib import Path
+from datetime import datetime
 from DeepLabCut.deeplabcut.refine_training_dataset.stitch import TrackletStitcher, Tracklet
 from demba.utils.dlc import load_tracklets, split_conjoined_tracklets
 from demba.config import (
@@ -15,6 +16,52 @@ from demba.config import (
     DEFAULT_MIN_CONJOINED_RUN_LENGTH,
     DEFAULT_SPLIT_CONJOINED
 )
+
+
+def calculate_track_purity(stitched_track, assigned_id):
+    """
+    Calculate track purity: proportion of frames matching the assigned ID.
+
+    Parameters
+    ----------
+    stitched_track : Tracklet
+        The stitched track composed of multiple tracklets
+    assigned_id : int
+        The ID that was assigned to this track
+
+    Returns
+    -------
+    float
+        Track purity (0.0 to 1.0), or -1 if identity data is not available
+    """
+    # Check if identity data exists (4th dimension)
+    if stitched_track.data.shape[-1] < 4:
+        return -1
+
+    # Get all identity values across all frames and bodyparts
+    # Shape is (n_frames, n_bodyparts, 4) where [:, :, 3] is identity
+    identities = stitched_track.data[:, :, 3]
+
+    # Count frames where the identity matches the assigned ID
+    # For each frame, check if any bodypart has the matching identity
+    matching_frames = 0
+    total_frames = len(stitched_track)
+
+    for frame_identities in identities:
+        # Check if this frame's identities match the assigned ID
+        # Use the mode (most common) identity in this frame
+        frame_ids = frame_identities[~np.isnan(frame_identities)]
+        if len(frame_ids) > 0:
+            # Get the most common identity in this frame
+            unique, counts = np.unique(frame_ids, return_counts=True)
+            frame_mode_id = unique[np.argmax(counts)]
+            if frame_mode_id == assigned_id:
+                matching_frames += 1
+
+    if total_frames == 0:
+        return 0.0
+
+    return matching_frames / total_frames
 
 
 def stitch_by_identity(trial_manager,
@@ -156,7 +203,9 @@ def stitch_by_identity(trial_manager,
     if tracklets_by_id[-1]:
         n_unassigned = len(tracklets_by_id[-1])
         frames_unassigned = sum(len(t) for t in tracklets_by_id[-1])
-        print(f"\nDiscarding {n_unassigned} unidentified tracklets ({frames_unassigned} frames, ~0.6% of data)")
+        total_frames = sum(len(t) for t in tracklets)
+        pct_unassigned = 100 * frames_unassigned / total_frames if total_frames > 0 else 0
+        print(f"\nDiscarding {n_unassigned} unidentified tracklets ({frames_unassigned} frames, {pct_unassigned:.1f}% of data)")
 
     # Create animal names
     if animal_names is None:
@@ -195,6 +244,106 @@ def stitch_by_identity(trial_manager,
     )
 
     print("Identity-preserving stitching complete!")
+
+    # Generate stitching summary
+    print("\nGenerating stitching summary...")
+
+    # Calculate track purity for each stitched track
+    track_purities = {}
+    for identity, track in stitched_tracks.items():
+        purity = calculate_track_purity(track, identity)
+        track_purities[identity] = purity
+
+    # Calculate total tracklets and percent per ID
+    total_tracklets = len(tracklets)
+    tracklet_percentages = {}
+    for identity in sorted(id_counts.keys()):
+        if identity in stitched_tracks or identity == -1:
+            pct = 100 * id_counts[identity] / total_tracklets if total_tracklets > 0 else 0
+            tracklet_percentages[identity] = pct
+
+    # Get unassigned statistics
+    n_unassigned_tracklets = len(tracklets_by_id[-1])
+    n_unassigned_frames = sum(len(t) for t in tracklets_by_id[-1])
+
+    # Create summary content
+    summary_lines = []
+    summary_lines.append("=" * 70)
+    summary_lines.append("TRACKLET STITCHING SUMMARY")
+    summary_lines.append("=" * 70)
+    summary_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    summary_lines.append(f"Trial: {trial_manager.trial_dir.name}")
+    summary_lines.append("")
+
+    summary_lines.append("-" * 70)
+    summary_lines.append("STITCHING PARAMETERS")
+    summary_lines.append("-" * 70)
+    summary_lines.append(f"Number of tracks (n_tracks):              {n_tracks}")
+    summary_lines.append(f"Minimum tracklet length (min_length):     {min_length}")
+    summary_lines.append(f"Split conjoined tracklets:                {split_conjoined}")
+    summary_lines.append(f"Min conjoined run length:                 {min_conjoined_run_length}")
+    summary_lines.append("")
+
+    summary_lines.append("-" * 70)
+    summary_lines.append("CONJOINED TRACKLET SPLITTING")
+    summary_lines.append("-" * 70)
+    if split_conjoined:
+        summary_lines.append(f"Number of conjoined tracklets split:      {n_split}")
+    else:
+        summary_lines.append("Conjoined tracklet splitting was disabled")
+    summary_lines.append("")
+
+    summary_lines.append("-" * 70)
+    summary_lines.append("TRACKLET DISTRIBUTION BY ID")
+    summary_lines.append("-" * 70)
+    summary_lines.append(f"Total tracklets processed:                {total_tracklets}")
+    summary_lines.append("")
+    for identity in sorted([k for k in id_counts.keys() if k != -1]):
+        count = id_counts[identity]
+        pct = tracklet_percentages.get(identity, 0)
+        summary_lines.append(f"  ID {identity}:  {count:4d} tracklets ({pct:5.1f}%)")
+    summary_lines.append("")
+
+    summary_lines.append("-" * 70)
+    summary_lines.append("UNASSIGNED TRACKLETS (DISCARDED)")
+    summary_lines.append("-" * 70)
+    summary_lines.append(f"Number of unassigned tracklets:           {n_unassigned_tracklets}")
+    summary_lines.append(f"Number of unassigned frames:              {n_unassigned_frames}")
+    if total_tracklets > 0:
+        unassigned_pct = tracklet_percentages.get(-1, 0)
+        summary_lines.append(f"Percent of tracklets unassigned:          {unassigned_pct:.1f}%")
+    summary_lines.append("")
+
+    summary_lines.append("-" * 70)
+    summary_lines.append("TRACK PURITY (by ID)")
+    summary_lines.append("-" * 70)
+    summary_lines.append("Track purity = proportion of frames matching assigned ID")
+    summary_lines.append("")
+    for identity in sorted(stitched_tracks.keys()):
+        purity = track_purities[identity]
+        if purity >= 0:
+            summary_lines.append(f"  ID {identity}:  {purity:.3f} ({purity*100:.1f}%)")
+        else:
+            summary_lines.append(f"  ID {identity}:  N/A (identity data not available)")
+
+    # Calculate average purity
+    valid_purities = [p for p in track_purities.values() if p >= 0]
+    if valid_purities:
+        avg_purity = np.mean(valid_purities)
+        summary_lines.append("")
+        summary_lines.append(f"Average track purity:                     {avg_purity:.3f} ({avg_purity*100:.1f}%)")
+    summary_lines.append("")
+    summary_lines.append("=" * 70)
+
+    # Write summary to file
+    summary_dir = trial_manager.id_correction_dir()
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = summary_dir / 'stitching_summary.txt'
+
+    with open(summary_path, 'w') as f:
+        f.write('\n'.join(summary_lines))
+
+    print(f"Summary written to: {summary_path}")
 
     # Mark stage as complete
     trial_manager.mark_stage_complete('tracklet_stitching')
