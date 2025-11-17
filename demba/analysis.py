@@ -162,12 +162,12 @@ class Plotter:
 
         # Create aggregate correlation plots
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        sns.scatterplot(x=n_mouthing_events, y=n_circle_quivers, hue=self.clipfeature_df['split'], ax=axes[0])
+        sns.regplot(x=n_mouthing_events, y=n_circle_quivers, ax=axes[0])
         axes[0].set_xlabel('Total Mouthing Events (Male + Female)')
         axes[0].set_ylabel('Total Circle Quivers (Manual)')
         axes[0].set_title('Event Counts: Auto vs Manual')
 
-        sns.scatterplot(x=mouthing_event_fraction, y=circle_quiver_fraction, hue=self.clipfeature_df['split'], ax=axes[1])
+        sns.regplot(x=mouthing_event_fraction, y=circle_quiver_fraction, ax=axes[1])
         axes[1].set_xlabel('Total Mouthing Fraction (Male + Female)')
         axes[1].set_ylabel('Total Circle Quiver Fraction (Manual)')
         axes[1].set_title('Event Fractions: Auto vs Manual')
@@ -193,36 +193,32 @@ class Plotter:
         fig, axes = plt.subplots(2, 2, figsize=(10, 10))
 
         # Male mouthing vs Female quivering (primary courtship pattern)
-        sns.scatterplot(x=self.clipfeature_df.n_male_mouthing_events,
+        sns.regplot(x=self.clipfeature_df.n_male_mouthing_events,
                        y=self.clipfeature_df.n_female_circle_quivers,
-                       hue=self.clipfeature_df['split'],
                        ax=axes[0, 0])
         axes[0, 0].set_xlabel('Male Mouthing Events')
         axes[0, 0].set_ylabel('Female Circle Quivers')
         axes[0, 0].set_title('Male Mouthing → Female Quivering')
 
         # Female mouthing vs Male quivering
-        sns.scatterplot(x=self.clipfeature_df.n_female_mouthing_events,
+        sns.regplot(x=self.clipfeature_df.n_female_mouthing_events,
                        y=self.clipfeature_df.n_male_circle_quivers,
-                       hue=self.clipfeature_df['split'],
                        ax=axes[0, 1])
         axes[0, 1].set_xlabel('Female Mouthing Events')
         axes[0, 1].set_ylabel('Male Circle Quivers')
         axes[0, 1].set_title('Female Mouthing → Male Quivering')
 
         # Male mouthing vs Female mouthing
-        sns.scatterplot(x=self.clipfeature_df.n_male_mouthing_events,
+        sns.regplot(x=self.clipfeature_df.n_male_mouthing_events,
                        y=self.clipfeature_df.n_female_mouthing_events,
-                       hue=self.clipfeature_df['split'],
                        ax=axes[1, 0])
         axes[1, 0].set_xlabel('Male Mouthing Events')
         axes[1, 0].set_ylabel('Female Mouthing Events')
         axes[1, 0].set_title('Male vs Female Mouthing')
 
         # Male quivering vs Female quivering
-        sns.scatterplot(x=self.clipfeature_df.n_male_circle_quivers,
+        sns.regplot(x=self.clipfeature_df.n_male_circle_quivers,
                        y=self.clipfeature_df.n_female_circle_quivers,
-                       hue=self.clipfeature_df['split'],
                        ax=axes[1, 1])
         axes[1, 1].set_xlabel('Male Circle Quivers')
         axes[1, 1].set_ylabel('Female Circle Quivers')

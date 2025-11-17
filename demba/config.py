@@ -29,7 +29,7 @@ DEFAULT_MIN_KEYPOINTS = 5  # Minimum valid keypoints for bbox calculation
 # Tracklet filtering
 DEFAULT_MIN_TRACKLET_LENGTH = 60  # Minimum tracklet length (frames) for inclusion in training set
 DEFAULT_MIN_OVERLAP_FRAMES = 30  # Minimum co-occupancy frames for tracklet pair inclusion in training set
-DEFAULT_MIN_CO_OCCUPANCY_FRAMES = 1000  # Minimum total co-occupancy frames to run triplet training (fallback to male-only if below)
+DEFAULT_MIN_CO_OCCUPANCY_FRAMES = 9000  # Minimum total co-occupancy frames to run triplet training (fallback to male-only if below)
 
 # Model training
 DEFAULT_ID_N_EPOCHS = 200  # Default number of training epochs. Early stopping will usually terminate training much earlier
@@ -53,7 +53,7 @@ DEFAULT_ID_SEGMENT_DURATION_SEC = 3  # Duration of each segment in seconds
 # =============================================================================
 # 3. TRACKLET STITCHING PARAMETERS
 # =============================================================================
-DEFAULT_STITCH_MIN_LENGTH = 10  # Minimum tracklet length to include in stitching
+DEFAULT_STITCH_MIN_LENGTH = 60  # Minimum tracklet length to include in stitching
 DEFAULT_STITCH_N_TRACKS = 2  # Number of individuals/tracks to reconstruct
 DEFAULT_MIN_CONJOINED_RUN_LENGTH = 40  # Minimum consecutive frames of same ID to count as "real" identity run
 DEFAULT_SPLIT_CONJOINED = True  # Whether to split tracklets that switch between tracking different individuals
