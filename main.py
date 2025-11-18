@@ -495,6 +495,90 @@ def cmd_batch(args):
     print("="*60)
 
 
+def cmd_create_annotation_package(args):
+    """Create annotation package for tracklet evaluation."""
+    from demba.utils.annotation_package import build_annotation_package
+
+    print("="*60)
+    print("Creating Annotation Package")
+    print("="*60)
+
+    # Initialize ProjectManager
+    pm = ProjectManager(
+        project_dir=args.project_dir,
+        shuffle=args.shuffle if hasattr(args, 'shuffle') else config.DEFAULT_SHUFFLE,
+        training_fraction=config.DEFAULT_TRAINING_FRACTION
+    )
+
+    print(f"Project directory: {pm.project_dir}")
+    print(f"Output directory: {args.output}\n")
+
+    # Build annotation package
+    context_weights = {
+        'duo': args.duo_weight,
+        'solo': 1.0 - args.duo_weight
+    }
+
+    summary = build_annotation_package(
+        project_manager=pm,
+        output_dir=args.output,
+        n_samples_per_video=args.n_samples,
+        min_tracklet_length=args.min_length,
+        context_weights=context_weights,
+        random_seed=args.random_seed
+    )
+
+    print("\nAnnotation package creation complete!")
+
+
+def cmd_evaluate_annotations(args):
+    """Evaluate tracklet annotations and generate metrics."""
+    from demba.evaluate_annotations import (
+        load_and_validate_annotations,
+        calculate_accuracy_metrics,
+        generate_evaluation_report
+    )
+
+    print("="*60)
+    print("Evaluating Tracklet Annotations")
+    print("="*60)
+
+    print(f"Annotations: {args.annotations}")
+    print(f"Metadata: {args.metadata}")
+    print(f"Output: {args.output}\n")
+
+    # Load and validate
+    print("Loading and validating annotations...")
+    annotations_df = load_and_validate_annotations(
+        annotation_csv_path=args.annotations,
+        metadata_json_path=args.metadata
+    )
+    # Store annotation file path for report
+    annotations_df.attrs['annotation_file'] = str(args.annotations)
+
+    print(f"  ✓ Loaded {len(annotations_df)} annotations\n")
+
+    # Calculate metrics
+    print("Calculating accuracy metrics...")
+    metrics = calculate_accuracy_metrics(annotations_df)
+    print(f"  ✓ Overall accuracy: {metrics['overall']['accuracy']*100:.1f}%")
+    print(f"  ✓ Frame-weighted accuracy: {metrics['overall']['frame_weighted_accuracy']*100:.1f}%\n")
+
+    # Generate report
+    print("Generating evaluation report...")
+    generate_evaluation_report(
+        metrics=metrics,
+        annotations_df=annotations_df,
+        output_dir=args.output,
+        create_plots=args.create_plots
+    )
+
+    print(f"\n{'='*60}")
+    print("Evaluation Complete!")
+    print(f"{'='*60}")
+    print(f"Results saved to: {args.output}")
+
+
 def main():
     """Main entry point with argument parsing."""
     parser = argparse.ArgumentParser(
@@ -684,6 +768,44 @@ Examples:
         help='Sample every Nth frame for patch cache (higher = less memory, default: 5)')
 
     batch_parser.set_defaults(func=cmd_batch)
+
+    # ========== CREATE ANNOTATION PACKAGE ==========
+    annot_package_parser = subparsers.add_parser(
+        'create-annotation-package',
+        help='Create annotation package for tracklet evaluation'
+    )
+    annot_package_parser.add_argument('--project-dir', required=True, type=Path,
+        help='Project directory (contains Videos/ subdirectory)')
+    annot_package_parser.add_argument('--output', type=Path, default='annotation_package',
+        help='Output directory for annotation package (default: annotation_package)')
+    annot_package_parser.add_argument('--n-samples', type=int, default=config.DEFAULT_EVAL_N_SAMPLES,
+        help=f'Number of tracklets to sample per video (default: {config.DEFAULT_EVAL_N_SAMPLES})')
+    annot_package_parser.add_argument('--min-length', type=int, default=config.DEFAULT_EVAL_MIN_TRACKLET_LENGTH,
+        help=f'Minimum tracklet length in frames (default: {config.DEFAULT_EVAL_MIN_TRACKLET_LENGTH})')
+    annot_package_parser.add_argument('--duo-weight', type=float, default=config.DEFAULT_EVAL_DUO_WEIGHT,
+        help=f'Sampling weight for duo contexts (default: {config.DEFAULT_EVAL_DUO_WEIGHT})')
+    annot_package_parser.add_argument('--random-seed', type=int, default=config.DEFAULT_EVAL_RANDOM_SEED,
+        help=f'Random seed for reproducibility (default: {config.DEFAULT_EVAL_RANDOM_SEED})')
+    annot_package_parser.add_argument('--shuffle', type=int, default=config.DEFAULT_SHUFFLE,
+        help='DeepLabCut shuffle index')
+    annot_package_parser.set_defaults(func=cmd_create_annotation_package)
+
+    # ========== EVALUATE ANNOTATIONS ==========
+    eval_annot_parser = subparsers.add_parser(
+        'evaluate-annotations',
+        help='Evaluate tracklet annotations and generate metrics'
+    )
+    eval_annot_parser.add_argument('--annotations', required=True, type=Path,
+        help='Path to completed annotation_sheet.csv')
+    eval_annot_parser.add_argument('--metadata', required=True, type=Path,
+        help='Path to clip_metadata.json')
+    eval_annot_parser.add_argument('--output', type=Path, default='evaluation_results',
+        help='Output directory for evaluation results (default: evaluation_results)')
+    eval_annot_parser.add_argument('--create-plots', action='store_true', default=True,
+        help='Generate plots (requires matplotlib, default: True)')
+    eval_annot_parser.add_argument('--no-plots', dest='create_plots', action='store_false',
+        help='Skip plot generation')
+    eval_annot_parser.set_defaults(func=cmd_evaluate_annotations)
 
     # Parse arguments
     if len(sys.argv) == 1:

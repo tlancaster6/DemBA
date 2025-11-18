@@ -100,3 +100,22 @@ DEFAULT_VIZ_GRID_HEIGHT = 6  # Grid height for identity consistency visualizatio
 # 7. ANALYSIS PARAMETERS
 # =============================================================================
 DEFAULT_ANALYSIS_BIN_WIDTH = 1800  # Bin width in frames for heatmaps (1800 frames = 60s at 30fps)
+
+
+# =============================================================================
+# 8. EVALUATION PARAMETERS
+# =============================================================================
+# Tracklet annotation sampling
+DEFAULT_EVAL_MIN_TRACKLET_LENGTH = 60  # Minimum tracklet length for annotation sampling (frames)
+DEFAULT_EVAL_N_SAMPLES = 40  # Number of tracklets to sample per video for annotation
+DEFAULT_EVAL_CONTEXT_OVERLAP_THRESHOLD = 0.3  # Threshold for solo vs duo context classification
+DEFAULT_EVAL_DUO_WEIGHT = 0.7  # Sampling weight for duo contexts (challenging cases)
+DEFAULT_EVAL_SOLO_WEIGHT = 0.3  # Sampling weight for solo contexts (baseline cases)
+DEFAULT_EVAL_RANDOM_SEED = 42  # Default random seed for reproducible sampling
+
+# Video clip rendering
+DEFAULT_EVAL_BBOX_PADDING = 20  # Padding around bounding box (pixels)
+DEFAULT_EVAL_BBOX_COLOR = (0, 255, 255)  # BGR color for bounding box (yellow)
+DEFAULT_EVAL_BBOX_THICKNESS = 3  # Bounding box line thickness (pixels)
+DEFAULT_EVAL_TEXT_FONTSIZE = 1.5  # Font scale for clip overlay text
+DEFAULT_EVAL_TEXT_THICKNESS = 3  # Text thickness (pixels)
