@@ -8,6 +8,9 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 
+from demba.utils.dlc import load_tracklets
+from demba import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -557,3 +560,461 @@ def generate_evaluation_report(metrics, annotations_df, output_dir, create_plots
         except ImportError:
             logger.warning("matplotlib not available, skipping plots")
             print("  (matplotlib not available, skipping plots)")
+
+
+def detect_conjoined_tracklet(tracklet, min_run_length=None):
+    """
+    Detect if a tracklet is conjoined using the same logic as split_conjoined_tracklets().
+
+    A "conjoined" tracklet is one that physically switches from tracking one fish
+    to tracking another fish, resulting in sustained runs of different identity
+    predictions (male vs female).
+
+    Parameters
+    ----------
+    tracklet : Tracklet
+        Tracklet object with identity predictions (4th column)
+    min_run_length : int, optional
+        Minimum consecutive frames of same ID to count as a "real" identity run.
+        If None, uses config.DEFAULT_MIN_CONJOINED_RUN_LENGTH
+
+    Returns
+    -------
+    bool
+        True if tracklet is conjoined (has major runs of both male and female)
+    dict
+        Metadata about the detection:
+        {
+            'is_conjoined': bool,
+            'has_identity_data': bool,
+            'runs': list of dict,
+            'major_runs': list of dict,
+            'has_male_run': bool,
+            'has_female_run': bool
+        }
+    """
+    if min_run_length is None:
+        min_run_length = config.DEFAULT_MIN_CONJOINED_RUN_LENGTH
+
+    result = {
+        'is_conjoined': False,
+        'has_identity_data': False,
+        'runs': [],
+        'major_runs': [],
+        'has_male_run': False,
+        'has_female_run': False
+    }
+
+    # Check if tracklet has identity data
+    if tracklet.data.shape[-1] < 4 or len(tracklet) < min_run_length:
+        return False, result
+
+    result['has_identity_data'] = True
+
+    # Get frame-level identity (ID is same across all bodyparts per frame)
+    # Just take the first bodypart's ID for each frame
+    frame_ids = tracklet.data[:, 0, 3]  # shape: (nframes,)
+
+    # Run-length encode to find consecutive runs
+    runs = []
+    if len(frame_ids) > 0:
+        current_id = frame_ids[0]
+        run_start = 0
+
+        for i in range(1, len(frame_ids)):
+            # Treat NaN as continuation of current run (ignore brief gaps)
+            if frame_ids[i] == current_id or np.isnan(frame_ids[i]):
+                continue
+            else:
+                # Run ended
+                runs.append({
+                    'id': current_id,
+                    'start_idx': run_start,
+                    'end_idx': i - 1,
+                    'length': i - run_start
+                })
+                current_id = frame_ids[i]
+                run_start = i
+
+        # Add final run
+        runs.append({
+            'id': current_id,
+            'start_idx': run_start,
+            'end_idx': len(frame_ids) - 1,
+            'length': len(frame_ids) - run_start
+        })
+
+    result['runs'] = runs
+
+    # Find major runs (length >= min_run_length, ID in {0, 1})
+    major_runs = [r for r in runs if r['length'] >= min_run_length and r['id'] in [0, 1]]
+    result['major_runs'] = major_runs
+
+    # Check if tracklet has major runs of BOTH male (0) and female (1)
+    has_male = any(r['id'] == 0 for r in major_runs)
+    has_female = any(r['id'] == 1 for r in major_runs)
+
+    result['has_male_run'] = has_male
+    result['has_female_run'] = has_female
+    result['is_conjoined'] = has_male and has_female
+
+    return result['is_conjoined'], result
+
+
+def evaluate_conjoined_detection(annotations_df, metadata_json_path, min_run_length=None,
+                                  exclude_videos=None):
+    """
+    Evaluate conjoined tracklet detection algorithm against manual annotations.
+
+    This function simulates the conjoined detection algorithm on the evaluation set
+    to determine how well it identifies tracklets that switch between tracking
+    different individuals.
+
+    Parameters
+    ----------
+    annotations_df : pd.DataFrame
+        Merged annotations from load_and_validate_annotations()
+    metadata_json_path : Path
+        Path to clip_metadata.json (contains trial_dir for loading tracklets)
+    min_run_length : int, optional
+        Minimum consecutive frames of same ID to count as a "real" identity run.
+        If None, uses config.DEFAULT_MIN_CONJOINED_RUN_LENGTH
+    exclude_videos : list of str, optional
+        List of video names to exclude from analysis. Video names should match
+        the 'video_name' column in annotation_sheet.csv (e.g., ['trial1.mp4', 'trial2.mp4'])
+
+    Returns
+    -------
+    dict
+        Evaluation metrics:
+        {
+            'confusion_matrix': {
+                'TP': int,  # Correctly identified conjoined
+                'FP': int,  # Incorrectly flagged as conjoined
+                'TN': int,  # Correctly identified as not conjoined
+                'FN': int   # Missed conjoined tracklets
+            },
+            'precision': float,  # TP / (TP + FP)
+            'recall': float,     # TP / (TP + FN)
+            'f1': float,         # Harmonic mean of precision and recall
+            'accuracy': float,   # (TP + TN) / total
+            'false_positive_rate': float,  # FP / (FP + TN)
+            'false_negative_rate': float,  # FN / (FN + TP)
+            'n_total': int,
+            'n_actual_conjoined': int,
+            'n_predicted_conjoined': int,
+            'n_excluded': int,  # Number of tracklets excluded
+            'excluded_videos': list,  # List of excluded video names
+            'examples': {
+                'false_negatives': list,  # Missed conjoined tracklets
+                'false_positives': list   # Incorrectly flagged tracklets
+            },
+            'detection_details': list  # Per-tracklet detection metadata
+        }
+    """
+    if min_run_length is None:
+        min_run_length = config.DEFAULT_MIN_CONJOINED_RUN_LENGTH
+
+    if exclude_videos is None:
+        exclude_videos = []
+
+    # Load metadata to get trial directories
+    with open(metadata_json_path) as f:
+        metadata = json.load(f)
+
+    # Initialize counters
+    TP = 0  # True Positive: correctly identified conjoined
+    FP = 0  # False Positive: incorrectly flagged as conjoined
+    TN = 0  # True Negative: correctly identified as not conjoined
+    FN = 0  # False Negative: missed conjoined tracklets
+    n_excluded = 0
+
+    false_negatives = []
+    false_positives = []
+    detection_details = []
+
+    # Cache loaded tracklets by (trial_dir, pickle_path) to avoid reloading
+    tracklet_cache = {}
+
+    # Print exclusion info
+    if exclude_videos:
+        print(f"\nExcluding {len(exclude_videos)} video(s) from conjoined detection analysis:")
+        for video_name in exclude_videos:
+            print(f"  - {video_name}")
+
+    print(f"\nEvaluating conjoined detection (min_run_length={min_run_length})...")
+
+    for idx, row in annotations_df.iterrows():
+        clip_id = row['clip_id']
+        video_name = row['video_name']
+        ground_truth = row['ground_truth_label']
+        tracklet_idx = row['tracklet_id']
+
+        # Check if this video should be excluded
+        if video_name in exclude_videos:
+            n_excluded += 1
+            continue
+
+        # Get metadata for this clip
+        clip_meta = metadata.get(clip_id)
+        if clip_meta is None:
+            logger.warning(f"No metadata found for {clip_id}, skipping")
+            continue
+
+        trial_dir = Path(clip_meta['trial_dir'])
+
+        # Construct path to tracklet pickle
+        # Assuming the pickle is named *_el.pickle in the trial directory
+        pickle_files = list(trial_dir.glob('*_el.pickle'))
+        if len(pickle_files) == 0:
+            logger.warning(f"No *_el.pickle found in {trial_dir}, skipping {clip_id}")
+            continue
+
+        pickle_path = pickle_files[0]
+
+        # Load tracklets (use cache)
+        cache_key = str(pickle_path)
+        if cache_key not in tracklet_cache:
+            try:
+                tracklets, header = load_tracklets(pickle_path)
+                tracklet_cache[cache_key] = tracklets
+            except Exception as e:
+                logger.error(f"Failed to load tracklets from {pickle_path}: {e}")
+                continue
+
+        tracklets = tracklet_cache[cache_key]
+
+        # Get the specific tracklet
+        if tracklet_idx >= len(tracklets):
+            logger.warning(f"Tracklet index {tracklet_idx} out of range for {clip_id}, skipping")
+            continue
+
+        tracklet = tracklets[tracklet_idx]
+
+        # Run conjoined detection
+        is_predicted_conjoined, detection_meta = detect_conjoined_tracklet(tracklet, min_run_length)
+
+        # Ground truth
+        is_actual_conjoined = (ground_truth == 'c')
+
+        # Update confusion matrix
+        if is_actual_conjoined and is_predicted_conjoined:
+            TP += 1
+        elif is_actual_conjoined and not is_predicted_conjoined:
+            FN += 1
+            false_negatives.append({
+                'clip_id': clip_id,
+                'video_name': row['video_name'],
+                'tracklet_idx': tracklet_idx,
+                'length': row['length'],
+                'confidence': row['confidence'],
+                'context': row['context'],
+                'detection_meta': detection_meta
+            })
+        elif not is_actual_conjoined and is_predicted_conjoined:
+            FP += 1
+            false_positives.append({
+                'clip_id': clip_id,
+                'video_name': row['video_name'],
+                'tracklet_idx': tracklet_idx,
+                'predicted_label': row['predicted_label'],
+                'length': row['length'],
+                'confidence': row['confidence'],
+                'context': row['context'],
+                'detection_meta': detection_meta
+            })
+        elif not is_actual_conjoined and not is_predicted_conjoined:
+            TN += 1
+
+        # Store detection details
+        detection_details.append({
+            'clip_id': clip_id,
+            'ground_truth': ground_truth,
+            'predicted_conjoined': is_predicted_conjoined,
+            'detection_meta': detection_meta
+        })
+
+    # Calculate metrics
+    n_total = TP + FP + TN + FN
+    n_actual_conjoined = TP + FN
+    n_predicted_conjoined = TP + FP
+
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    accuracy = (TP + TN) / n_total if n_total > 0 else 0.0
+    fpr = FP / (FP + TN) if (FP + TN) > 0 else 0.0
+    fnr = FN / (FN + TP) if (FN + TP) > 0 else 0.0
+
+    return {
+        'confusion_matrix': {
+            'TP': TP,
+            'FP': FP,
+            'TN': TN,
+            'FN': FN
+        },
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'accuracy': accuracy,
+        'false_positive_rate': fpr,
+        'false_negative_rate': fnr,
+        'n_total': n_total,
+        'n_actual_conjoined': n_actual_conjoined,
+        'n_predicted_conjoined': n_predicted_conjoined,
+        'n_excluded': n_excluded,
+        'excluded_videos': exclude_videos,
+        'examples': {
+            'false_negatives': false_negatives,
+            'false_positives': false_positives
+        },
+        'detection_details': detection_details
+    }
+
+
+def generate_conjoined_detection_report(conjoined_metrics, output_dir, min_run_length=None):
+    """
+    Generate report for conjoined detection evaluation.
+
+    Parameters
+    ----------
+    conjoined_metrics : dict
+        Output from evaluate_conjoined_detection()
+    output_dir : Path
+        Directory for output files
+    min_run_length : int, optional
+        The min_run_length parameter used for detection
+
+    Outputs
+    -------
+    1. conjoined_detection_report.txt (text summary)
+    2. conjoined_false_negatives.csv (missed conjoined tracklets)
+    3. conjoined_false_positives.csv (incorrectly flagged tracklets)
+    """
+    if min_run_length is None:
+        min_run_length = config.DEFAULT_MIN_CONJOINED_RUN_LENGTH
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cm = conjoined_metrics['confusion_matrix']
+
+    # Write text report
+    report_path = output_dir / 'conjoined_detection_report.txt'
+    with open(report_path, 'w') as f:
+        f.write("CONJOINED TRACKLET DETECTION EVALUATION\n")
+        f.write("=" * 70 + "\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Min Run Length Parameter: {min_run_length} frames\n\n")
+
+        f.write("OVERVIEW\n")
+        f.write("-" * 70 + "\n")
+        f.write("This report evaluates how well the automatic conjoined tracklet\n")
+        f.write("detection algorithm identifies tracklets that switch between tracking\n")
+        f.write("different individuals (male/female).\n\n")
+
+        # Exclusion info
+        if conjoined_metrics['n_excluded'] > 0:
+            f.write("EXCLUDED VIDEOS\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"Number of tracklets excluded: {conjoined_metrics['n_excluded']}\n")
+            f.write(f"Videos excluded from analysis:\n")
+            for video_name in conjoined_metrics['excluded_videos']:
+                f.write(f"  - {video_name}\n")
+            f.write("\n")
+
+        f.write("CONFUSION MATRIX\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"                      Predicted Not Conjoined    Predicted Conjoined\n")
+        f.write(f"Actual Not Conjoined  {cm['TN']:22d}    {cm['FP']:19d}\n")
+        f.write(f"Actual Conjoined      {cm['FN']:22d}    {cm['TP']:19d}\n\n")
+
+        f.write("CLASSIFICATION METRICS\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"Total tracklets:              {conjoined_metrics['n_total']}\n")
+        f.write(f"Actual conjoined:             {conjoined_metrics['n_actual_conjoined']} ")
+        f.write(f"({conjoined_metrics['n_actual_conjoined']/max(1,conjoined_metrics['n_total'])*100:.1f}%)\n")
+        f.write(f"Predicted conjoined:          {conjoined_metrics['n_predicted_conjoined']} ")
+        f.write(f"({conjoined_metrics['n_predicted_conjoined']/max(1,conjoined_metrics['n_total'])*100:.1f}%)\n\n")
+
+        f.write(f"Accuracy:                     {conjoined_metrics['accuracy']*100:.1f}%\n")
+        f.write(f"Precision:                    {conjoined_metrics['precision']*100:.1f}%\n")
+        f.write(f"Recall (Sensitivity):         {conjoined_metrics['recall']*100:.1f}%\n")
+        f.write(f"F1 Score:                     {conjoined_metrics['f1']:.3f}\n\n")
+
+        f.write(f"False Positive Rate:          {conjoined_metrics['false_positive_rate']*100:.1f}%\n")
+        f.write(f"False Negative Rate:          {conjoined_metrics['false_negative_rate']*100:.1f}%\n\n")
+
+        f.write("INTERPRETATION\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"Precision ({conjoined_metrics['precision']*100:.1f}%):\n")
+        f.write(f"  Of tracklets flagged as conjoined, {conjoined_metrics['precision']*100:.1f}% are\n")
+        f.write(f"  actually conjoined. Low precision = many false alarms.\n\n")
+
+        f.write(f"Recall ({conjoined_metrics['recall']*100:.1f}%):\n")
+        f.write(f"  Of actually-conjoined tracklets, {conjoined_metrics['recall']*100:.1f}% are detected.\n")
+        f.write(f"  Low recall = many conjoined tracklets are missed.\n\n")
+
+        f.write("ERROR ANALYSIS\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"False Negatives (FN={cm['FN']}): Conjoined tracklets that were MISSED\n")
+        f.write(f"  These represent identity switches that the algorithm fails to detect.\n")
+        f.write(f"  They will NOT be split and may cause downstream identity errors.\n\n")
+
+        f.write(f"False Positives (FP={cm['FP']}): Non-conjoined tracklets INCORRECTLY flagged\n")
+        f.write(f"  These are good tracklets that would be unnecessarily split.\n")
+        f.write(f"  This could fragment valid tracks and reduce coverage.\n\n")
+
+        if cm['FN'] > 0:
+            f.write(f"See conjoined_false_negatives.csv for details on missed tracklets.\n")
+        if cm['FP'] > 0:
+            f.write(f"See conjoined_false_positives.csv for details on false alarms.\n")
+
+        f.write("\n" + "=" * 70 + "\n")
+        f.write("RECOMMENDATIONS\n")
+        f.write("-" * 70 + "\n")
+
+        if conjoined_metrics['recall'] < 0.7:
+            f.write(f"⚠ Low recall ({conjoined_metrics['recall']*100:.1f}%): Many conjoined tracklets are missed.\n")
+            f.write(f"  Consider DECREASING min_run_length (currently {min_run_length}) to detect\n")
+            f.write(f"  shorter identity runs. WARNING: May increase false positives.\n\n")
+
+        if conjoined_metrics['precision'] < 0.7:
+            f.write(f"⚠ Low precision ({conjoined_metrics['precision']*100:.1f}%): Many false alarms.\n")
+            f.write(f"  Consider INCREASING min_run_length (currently {min_run_length}) to require\n")
+            f.write(f"  longer identity runs. WARNING: May decrease recall.\n\n")
+
+        if conjoined_metrics['f1'] >= 0.8:
+            f.write(f"✓ Good F1 score ({conjoined_metrics['f1']:.3f}): Detection algorithm performs well.\n")
+            f.write(f"  Current min_run_length={min_run_length} appears appropriate.\n\n")
+
+        f.write("\nNOTE: Parameter sweep analysis (TODO) can help optimize min_run_length\n")
+        f.write("by testing values from 20-100 frames and plotting precision/recall curves.\n")
+
+    print(f"\n✓ Conjoined detection report written to: {report_path}")
+
+    # Write false negatives CSV
+    if len(conjoined_metrics['examples']['false_negatives']) > 0:
+        fn_df = pd.DataFrame(conjoined_metrics['examples']['false_negatives'])
+        # Flatten detection_meta for CSV
+        fn_df['has_male_run'] = fn_df['detection_meta'].apply(lambda x: x.get('has_male_run', False))
+        fn_df['has_female_run'] = fn_df['detection_meta'].apply(lambda x: x.get('has_female_run', False))
+        fn_df['n_major_runs'] = fn_df['detection_meta'].apply(lambda x: len(x.get('major_runs', [])))
+        fn_df = fn_df.drop(columns=['detection_meta'])
+
+        fn_path = output_dir / 'conjoined_false_negatives.csv'
+        fn_df.to_csv(fn_path, index=False)
+        print(f"✓ False negatives written to: {fn_path}")
+
+    # Write false positives CSV
+    if len(conjoined_metrics['examples']['false_positives']) > 0:
+        fp_df = pd.DataFrame(conjoined_metrics['examples']['false_positives'])
+        # Flatten detection_meta for CSV
+        fp_df['has_male_run'] = fp_df['detection_meta'].apply(lambda x: x.get('has_male_run', False))
+        fp_df['has_female_run'] = fp_df['detection_meta'].apply(lambda x: x.get('has_female_run', False))
+        fp_df['n_major_runs'] = fp_df['detection_meta'].apply(lambda x: len(x.get('major_runs', [])))
+        fp_df = fp_df.drop(columns=['detection_meta'])
+
+        fp_path = output_dir / 'conjoined_false_positives.csv'
+        fp_df.to_csv(fp_path, index=False)
+        print(f"✓ False positives written to: {fp_path}")

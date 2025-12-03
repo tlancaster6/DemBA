@@ -536,7 +536,9 @@ def cmd_evaluate_annotations(args):
     from demba.evaluate_annotations import (
         load_and_validate_annotations,
         calculate_accuracy_metrics,
-        generate_evaluation_report
+        generate_evaluation_report,
+        evaluate_conjoined_detection,
+        generate_conjoined_detection_report
     )
 
     print("="*60)
@@ -572,6 +574,37 @@ def cmd_evaluate_annotations(args):
         output_dir=args.output,
         create_plots=args.create_plots
     )
+
+    # Evaluate conjoined detection
+    if args.evaluate_conjoined:
+        print("\nEvaluating conjoined tracklet detection...")
+
+        # Parse exclude_videos list
+        exclude_videos = []
+        if args.exclude_videos:
+            exclude_videos = [v.strip() for v in args.exclude_videos.split(',')]
+
+        conjoined_metrics = evaluate_conjoined_detection(
+            annotations_df=annotations_df,
+            metadata_json_path=args.metadata,
+            min_run_length=args.min_conjoined_run_length,
+            exclude_videos=exclude_videos
+        )
+        print(f"  ✓ Detection accuracy: {conjoined_metrics['accuracy']*100:.1f}%")
+        print(f"  ✓ Precision: {conjoined_metrics['precision']*100:.1f}%")
+        print(f"  ✓ Recall: {conjoined_metrics['recall']*100:.1f}%")
+        print(f"  ✓ F1 Score: {conjoined_metrics['f1']:.3f}")
+        if conjoined_metrics['n_excluded'] > 0:
+            print(f"  ✓ Excluded: {conjoined_metrics['n_excluded']} tracklets\n")
+        else:
+            print()
+
+        print("Generating conjoined detection report...")
+        generate_conjoined_detection_report(
+            conjoined_metrics=conjoined_metrics,
+            output_dir=args.output,
+            min_run_length=args.min_conjoined_run_length
+        )
 
     print(f"\n{'='*60}")
     print("Evaluation Complete!")
@@ -805,6 +838,13 @@ Examples:
         help='Generate plots (requires matplotlib, default: True)')
     eval_annot_parser.add_argument('--no-plots', dest='create_plots', action='store_false',
         help='Skip plot generation')
+    eval_annot_parser.add_argument('--evaluate-conjoined', action='store_true', default=False,
+        help='Evaluate conjoined tracklet detection algorithm (default: False)')
+    eval_annot_parser.add_argument('--min-conjoined-run-length', type=int,
+        default=config.DEFAULT_MIN_CONJOINED_RUN_LENGTH,
+        help=f'Min run length for conjoined detection (default: {config.DEFAULT_MIN_CONJOINED_RUN_LENGTH})')
+    eval_annot_parser.add_argument('--exclude-videos', type=str, default=None,
+        help='Comma-separated list of video names to exclude from conjoined analysis (e.g., "trial1.mp4,trial2.mp4")')
     eval_annot_parser.set_defaults(func=cmd_evaluate_annotations)
 
     # Parse arguments
