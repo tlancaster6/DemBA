@@ -1,0 +1,156 @@
+# Project definitions (do not edit)
+Task: demasoni_singlenuc
+scorer: Victor
+date: Sep11
+multianimalproject: true
+identity: false
+
+
+# Project path (change when moving around)
+project_path: 
+  C:\Users\tucke\PycharmProjects\DemBA\tests\demasoni_singlenuc-tucker-2025-09-11
+
+
+# Default DeepLabCut engine to use for shuffle creation (either pytorch or tensorflow)
+engine: pytorch
+
+
+# Annotation data set configuration (and individual video cropping parameters)
+video_sets:
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t001_9.25.24_DC11.mp4:
+    crop: 0, 482, 0, 474
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t001_9.25.24_DC11cropped.mp4
+  : crop: 0, 482, 0, 474
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t001_10.21.24_DB12cropped.mp4
+  : crop: 0, 482, 0, 482
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t007_9.20.24_DC10cropped.mp4
+  : crop: 0, 476, 0, 496
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t001_9.20.24_DB10cropped.mp4
+  : crop: 0, 492, 0, 476
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t007_9.25.24_DB11cropped.mp4
+  : crop: 0, 486, 0, 492
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t007_10.21.24_DC13cropped.mp4
+  : crop: 0, 484, 0, 496
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t011_10.21.24_DB13cropped.mp4
+  : crop: 0, 474, 0, 470
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t011_10.29.24_DC14cropped.mp4
+  : crop: 0, 484, 0, 482
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t013_10.21.24_DC12cropped.mp4
+  : crop: 0, 482, 0, 484
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/bgrb_t015_10.29.24_DB14cropped.mp4
+  : crop: 0, 480, 0, 486
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/BHVE_group2cropped.mp4:
+    crop: 0, 384, 0, 394
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/BHVE_group6cropped.mp4:
+    crop: 0, 368, 0, 370
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/BHVE_group7cropped.mp4:
+    crop: 0, 392, 0, 388
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/BHVE_group9cropped.mp4:
+    crop: 0, 368, 0, 370
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/CTRL_group2cropped.mp4:
+    crop: 0, 372, 0, 372
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/CTRL_group6cropped.mp4:
+    crop: 0, 384, 0, 384
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/CTRL_group7cropped.mp4:
+    crop: 0, 378, 0, 366
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/CTRL_group9cropped.mp4:
+    crop: 0, 368, 0, 368
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_BHVE_group1cropped.mp4
+  : crop: 0, 370, 0, 372
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_BHVE_group3cropped.mp4
+  : crop: 0, 376, 0, 374
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_BHVE_group5cropped.mp4
+  : crop: 0, 362, 0, 366
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_BHVE_group8cropped.mp4
+  : crop: 0, 370, 0, 374
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_CTRL_group1cropped.mp4
+  : crop: 0, 372, 0, 370
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_CTRL_group3cropped.mp4
+  : crop: 0, 366, 0, 370
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_CTRL_group5cropped.mp4
+  : crop: 0, 376, 0, 364
+  ? /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11/videos/knl_demasoni_CTRL_group8cropped.mp4
+  : crop: 0, 370, 0, 364
+individuals:
+- individual1
+- individual2
+uniquebodyparts: []
+multianimalbodyparts:
+- nose
+- leftEye
+- rightEye
+- stripe1
+- stripe2
+- stripe3
+- stripe4
+- tailBase
+- tailTip
+bodyparts: MULTI!
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+start: 0
+stop: 1
+numframes2pick: 20
+
+
+# Plotting configuration
+skeleton:
+- - nose
+  - leftEye
+- - nose
+  - rightEye
+- - leftEye
+  - rightEye
+- - leftEye
+  - stripe1
+- - rightEye
+  - stripe1
+- - stripe1
+  - stripe2
+- - stripe2
+  - stripe3
+- - stripe3
+  - stripe4
+- - stripe4
+  - tailBase
+- - tailBase
+  - tailTip
+skeleton_color: black
+pcutoff: 0.25
+dotsize: 6
+alphavalue: 0.7
+colormap: rainbow
+
+
+# Training,Evaluation and Analysis configuration
+TrainingFraction:
+- 0.95
+iteration: 0
+default_net_type: resnet_50
+default_augmenter: albumentations
+default_track_method: ellipse
+snapshotindex: -1
+detector_snapshotindex: -1
+batch_size: 8
+
+
+# Cropping Parameters (for analysis and outlier frame detection)
+cropping: false
+#if cropping is true for analysis, then set the values here:
+x1: 0
+x2: 640
+y1: 277
+y2: 624
+
+
+# Refinement configuration (parameters from annotation dataset configuration also relevant in this stage)
+corner2move2:
+- 50
+- 50
+move2corner: true
+
+
+# Conversion tables to fine-tune SuperAnimal weights
+SuperAnimalConversionTables:
+detector_batch_size: 1

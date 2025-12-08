@@ -1,0 +1,27 @@
+dataset: 
+  /home/tlancaster/PycharmProjects/DemBA/projects/demasoni_singlenuc-tucker-2025-09-11
+dataset_type: multi-animal-imgaug
+num_joints: 9
+all_joints:
+- - 0
+- - 1
+- - 2
+- - 3
+- - 4
+- - 5
+- - 6
+- - 7
+- - 8
+all_joints_names:
+- nose
+- leftEye
+- rightEye
+- stripe1
+- stripe2
+- stripe3
+- stripe4
+- tailBase
+- tailTip
+net_type: resnet_50
+global_scale: 1
+scoremap_dir: test
